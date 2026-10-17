@@ -1,6 +1,6 @@
 # ROADMAP: ValleBlanco-Soft (MVP Sistema de Administración de Condominios)
 
-> **Versión:** 1.1 (Fase 1 cerrada: reglas de negocio confirmadas y Excel de muestra analizado)
+> **Versión:** 1.2 (Fase 1 cerrada; respuestas del cliente a las preguntas abiertas incorporadas)
 > **Dominio de producción:** `torre2.arequipa.site`
 > **Marcas:** ✅ confirmado · 🟡 supuesto propuesto (validar) · ⏳ pendiente de respuesta
 
@@ -41,7 +41,7 @@ Todos los módulos pedidos entran en el MVP, pero se entregan en **tres releases
 ### Release 2: Transparencia y comunicación (P1)
 | Módulo | App Django | Contenido |
 |--------|-----------|-----------|
-| M5 Gastos y resumen | `finances` | Registro de egresos, resumen ingresos/egresos visible a propietarios |
+| M5 Gastos y resumen | `finances` | Registro de egresos, resumen ingresos/egresos y detalle de cada gasto (proveedor, monto y comprobante si existe) visible a propietarios |
 | M6 Comunicados | `communications` | Avisos, historial, notificación por correo |
 | M7 Correo | `communications` | Avisos de nuevos cargos, vencimientos, pago aprobado/rechazado, comunicados |
 | M8 Convenios de pago | `finances` | Refinanciamiento de deudas en cuotas (🟡 alcance por validar) |
@@ -114,6 +114,7 @@ Recibo interno con correlativo, unidad, titular, periodos cubiertos, monto, medi
 - Plantillas CSV definidas en la Fase 2: `unidades.csv`, `personas.csv`, `relaciones_unidad.csv`, `deudas_iniciales.csv`, `pagos_historicos.csv`.
 - Comportamiento: **modo simulación (dry-run)** que valida sin guardar, reporte de errores por fila, **idempotente** (reimportar no duplica) y transaccional.
 - Se define con el Excel real (columnas, formato de fechas, numeración de departamentos).
+- Correo y teléfono de los residentes son **opcionales** en la importación; la administración los completa o corrige después desde el sistema. ✅
 
 ---
 
@@ -134,7 +135,7 @@ Recibo interno con correlativo, unidad, titular, periodos cubiertos, monto, medi
 ## 8. Hoja de ruta por fases
 
 ### Fase 1: Requerimientos y Hoja de Ruta ✅ (este documento)
-Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** responder las preguntas de la sección 10.
+Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** confirmar el umbral de morosidad (sección 12).
 
 ### Fase 2: Diseño de Arquitectura
 `ARCHITECTURE.md` con modelo ER, contrato de API REST, estructura Vue, autenticación, almacenamiento privado de comprobantes, diseño de plantillas CSV y design system.
@@ -198,10 +199,17 @@ Nginx en el Host, Certbot, GitHub Actions por SSH, `docker compose up -d --build
 - Los datos de la muestra terminan en dic-2024 (cuotas) y abr-2025 (banco), y el sistema arranca en nov-2026.
 - Detalle completo y reglas de conversión en `ARCHITECTURE.md`, secciones 2 y 7.
 
-## 12. Preguntas abiertas (⏳) antes del sprint S0
-1. Significado de `NC` y tratamiento de las celdas de estado vacías.
-2. Cobertura de datos entre 2025 y octubre de 2026 en el Excel final.
-3. Correos, teléfonos y DNI de los residentes.
-4. Depósitos bancarios en efectivo: ¿cuentan como "Depósito"?
-5. Umbral de morosidad: 4 o más cuotas vencidas.
-6. Visibilidad del detalle de gastos para propietarios e inquilinos.
+## 12. Decisiones cerradas tras la Fase 2 (✅ confirmadas por el cliente)
+
+| Tema | Decisión |
+|------|----------|
+| Estado `NC` | Significa **"no corresponde cobrar"** (la unidad aún no pagaba). No genera cargo |
+| Celdas vacías | El Excel final **no tendrá celdas vacías**; las no cobrables vendrán como `NC`. La revisión manual se hace en la importación en bloque |
+| Cobertura de datos | El Excel final traerá **todos los pagos de todos los años**, incluido el tramo 2025 a oct-2026 |
+| Correos y teléfonos | No están disponibles. El sistema permite **completarlos y editarlos después**, a mano, por la administración |
+| `DEP.EN EFECTIVO` | Es un **depósito en la cuenta** del banco; cuenta como **Depósito**. "No se acepta efectivo" se refiere a efectivo entregado a la administración |
+| Gastos | Los **propietarios** ven el **detalle de cada gasto** (proveedor y monto) y su **comprobante** si existe |
+
+## 13. Preguntas abiertas (⏳)
+1. Umbral de morosidad: ¿4 o más cuotas vencidas? (valor por defecto del Excel de muestra, configurable).
+2. ¿Los inquilinos también ven el detalle de gastos? (la decisión cerrada solo menciona a propietarios).

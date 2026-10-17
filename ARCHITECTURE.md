@@ -1,8 +1,8 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.1 (borrador de Fase 2)
-> **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta antes del sprint S0.
-> **Base:** reglas de negocio del `ROADMAP.md` v1.0 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
+> **Versión:** 0.2 (borrador de Fase 2, con respuestas del cliente)
+> **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
+> **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
 ---
 
@@ -37,19 +37,19 @@ El archivo contiene 7 hojas. Los nombres de personas son datos personales y **no
 | **80 unidades** con código de 3 o 4 dígitos: `101…108`, `201…208`, …, `1001…1008` | `Unit.code` es texto único por torre; piso = `code // 100`, número = `code % 100` |
 | `PROPIETAROS` tiene **160 filas** (las 80 unidades aparecen dos veces; la segunda copia sin ID) | El importador **deduplica por código de unidad**, nunca por `ID` |
 | Los nombres vienen inconsistentes (nombre/apellido invertidos, apellidos truncados, mayúsculas distintas entre hojas) | `Person.full_name` canónico + revisión manual en el reporte de importación |
-| **No hay correo, teléfono ni DNI** en ninguna hoja | ⏳ Necesarios para invitar usuarios por correo (ver pregunta 3) |
+| **No hay correo, teléfono ni DNI** en ninguna hoja | ✅ Se importan residentes sin esos datos; `Person.email` y `Person.phone` son opcionales y la administración los completa después (`PATCH /people/{id}/`). Sin correo no se puede invitar al usuario |
 | `PAGOS`: matriz de **80 unidades × 70 meses** (mar-2019 a dic-2024) con estado `PAGO` / `DEBE` / `NC`, **sin montos ni fechas** | Historial anterior a 2024 solo tiene estado; se importa como cargos con pago "histórico" |
-| Estado `NC` (206 celdas) coincide con los meses anteriores a que la unidad empezara a pagar | `Unit.billing_start` (primer mes cobrable); ⏳ confirmar significado de `NC` |
-| **156 celdas de estado vacías** | Se reportan como advertencia para resolución manual; no se adivinan |
+| Estado `NC` (206 celdas) coincide con los meses anteriores a que la unidad empezara a pagar | `Unit.billing_start` (primer mes cobrable); ✅ `NC` = "no corresponde cobrar" |
+| **156 celdas de estado vacías** (solo en la muestra) | ✅ El Excel final no tendrá celdas vacías (las no cobrables irán como `NC`). Si aparece alguna, se reporta como advertencia y no se adivina |
 | `ESTADO DE CUENTA`: movimientos bancarios **ene-2024 a abr-2025** con fecha, glosa, gasto o ingreso | Fuente de **pagos con detalle** y **gastos** desde 2024 |
 | Glosas de ingreso como `506 ENE2024`, `505 \| JUL AGO SET`, `1006 OCT-NOV-DIC 2023` | El importador interpreta **unidad + meses** con expresiones regulares; ~88 % coincide, el resto va a revisión |
 | ~58 ingresos sin unidad (devoluciones, donaciones, macetas) | Entidad `OtherIncome` |
-| Tipos de glosa bancaria: transferencias, `DEPOSITO AG`, `TRAN.CEL.BM` (banca móvil), `DEP.EN EFECTIVO` | Mapa glosa → método de pago. ⏳ El depósito bancario en efectivo cuenta como **Depósito** (ver pregunta 4) |
+| Tipos de glosa bancaria: transferencias, `DEPOSITO AG`, `TRAN.CEL.BM` (banca móvil), `DEP.EN EFECTIVO` | Mapa glosa → método de pago. ✅ `DEP.EN EFECTIVO` es un depósito en la cuenta y cuenta como **Depósito** |
 | Gastos: SEAL (luz), ascensor Schindler, impuesto ITF, comisión de cuenta, materiales, maestros | Categorías de gasto iniciales |
 | Saldo inicial `7,527.04` el 26-ene-2024 ("cuenta anterior") | Configuración `opening_balance` del fondo |
 | `RESUMEN DEUDORES`: es **moroso** quien debe **4 o más meses** (`M+4`); deuda total de muestra S/ 46,800 = 585 cuotas | Regla `delinquency_threshold = 4`, configurable |
 | `Directorio`: teléfonos, cuenta bancaria, **códigos de candados** | Datos sensibles: **jamás en el repositorio**; módulo "Directorio" queda para backlog con acceso restringido |
-| Los datos terminan en dic-2024 (matriz) y abr-2025 (banco), pero el sistema arranca en **nov-2026** | ⏳ Falta el periodo intermedio (ver pregunta 2) |
+| Los datos terminan en dic-2024 (matriz) y abr-2025 (banco), pero el sistema arranca en **nov-2026** | ✅ El Excel final traerá todos los pagos de todos los años; no hace falta saldo inicial por unidad |
 
 ---
 
@@ -157,7 +157,7 @@ Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `Un
 | `Condominium` | `name` | Hoy un registro |
 | `Tower` | `condominium`, `name`, `floors` | Hoy: "Torre 2" |
 | `Unit` | `tower`, `code` ("101"), `floor`, `number`, `billing_start` (date), `is_active` | `UNIQUE(tower, code)` |
-| `Person` | `full_name`, `first_names`, `last_names`, `doc_type`, `doc_number`, `email`, `phone` | Existe aunque no tenga usuario |
+| `Person` | `full_name`, `first_names`, `last_names`, `doc_type`, `doc_number`, `email`, `phone` | Existe aunque no tenga usuario. `email` y `phone` son opcionales y editables por la administración |
 | `UnitOccupancy` | `unit`, `person`, `relation` (`OWNER` / `TENANT`), `is_primary`, `start_date`, `end_date` | **Un solo titular principal vigente por unidad** (restricción única parcial). El titular principal recibe el recibo y es quien **vota** |
 
 ### 4.3 `finances`
@@ -171,7 +171,7 @@ Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `Un
 | `PaymentVoucher` | `payment`, `file`, `sha256`, `content_type`, `size` | Detecta imágenes repetidas por `sha256` |
 | `PaymentAllocation` | `payment`, `charge`, `amount` | `amount > 0`; suma por pago ≤ monto del pago; suma por cargo ≤ monto del cargo (validado con bloqueo de filas) |
 | `Receipt` | `payment` (1:1), `number` (`R-2026-000123`), `issued_at`, `snapshot` (JSON) | Correlativo por año; el PDF se genera desde el *snapshot* inmutable |
-| `ExpenseCategory` / `Expense` | `tower`, `date`, `category`, `description`, `supplier`, `amount`, `document`, `status` | Categorías iniciales: Energía común, Ascensor, Impuestos y comisiones bancarias, Materiales, Servicios de terceros, Otros |
+| `ExpenseCategory` / `Expense` | `tower`, `date`, `category`, `description`, `supplier`, `amount`, `document`, `status` | Categorías iniciales: Energía común, Ascensor, Impuestos y comisiones bancarias, Materiales, Servicios de terceros, Otros. Los propietarios ven el detalle (proveedor, monto) y el comprobante si existe |
 | `OtherIncome` | `tower`, `date`, `description`, `amount` | Devoluciones y donaciones |
 | `PaymentAgreement` (convenio) | `unit`, `principal`, `installments_count`, `installment_amount`, `first_due_date`, `status`, `approved_by`, `notes` | **Interés = total pactado − principal**, y puede ser **0**. Al activarse, los cargos originales pasan a `REFINANCED` y se generan los cargos de cuota |
 
@@ -275,7 +275,9 @@ Servicios `compute_late_fee()` y `compute_early_discount()` existen detrás de `
 | POST | `/payments/{id}/reject/` | Rechazar con motivo | A, T |
 | POST | `/payments/{id}/void/` | Anular pago aprobado | A |
 | GET | `/payments/{id}/receipt/pdf/` | Recibo PDF | A, T · P, I (propio) |
-| GET/POST/PATCH | `/expenses/` | Gastos | A, T (escritura) · auth (lectura) ⏳ |
+| GET | `/expenses/` · `/expenses/{id}/` | Gastos con detalle (proveedor, monto) | A, J, P |
+| POST/PATCH | `/expenses/` · `/expenses/{id}/` | Registrar y editar gastos | A, T |
+| GET | `/expenses/{id}/document/` | Descargar comprobante del gasto, si existe | A, J, P |
 | GET | `/expense-categories/` | Categorías | auth |
 | GET | `/reports/income-expense/` | Resumen mensual de ingresos y egresos | auth |
 | GET | `/reports/delinquency/` | Morosidad | A, J |
@@ -325,7 +327,7 @@ El importador **solo conoce los CSV normalizados**; el conversor es el único qu
 | Archivo | Columnas | Observaciones |
 |---------|----------|---------------|
 | `units.csv` | `tower`, `unit_code`, `floor`, `number`, `billing_start` (`YYYY-MM`) | `billing_start` = primer mes no `NC` |
-| `people.csv` | `person_ref`, `full_name`, `doc_type`, `doc_number`, `email`, `phone` | `email` obligatorio solo para quien tendrá acceso |
+| `people.csv` | `person_ref`, `full_name`, `doc_type`, `doc_number`, `email`, `phone` | `email` y `phone` opcionales; se completan después en el sistema. Sin `email` no se puede invitar al usuario |
 | `occupancies.csv` | `unit_code`, `person_ref`, `relation`, `is_primary`, `start_date`, `end_date` | Una fila titular principal por unidad |
 | `charges.csv` | `unit_code`, `concept`, `period`, `amount`, `due_date`, `legacy_paid` | `legacy_paid=true` → pago histórico sin detalle (`LEGACY`) |
 | `payments.csv` | `payment_ref`, `unit_code`, `paid_at`, `amount`, `method`, `operation_number`, `periods` (`2024-05\|2024-06`), `bank_description` | Fila sin `periods` → se aplica al más antiguo |
@@ -395,7 +397,7 @@ frontend/src/
 | `/` | Panel: saldo, próximos vencimientos, comunicados | auth |
 | `/estado-de-cuenta` | Estado de cuenta de mi unidad | P, I |
 | `/pagos/nuevo` | Registrar pago con comprobante | P, I |
-| `/transparencia` | Resumen de ingresos y egresos | auth |
+| `/transparencia` | Resumen de ingresos y egresos; el detalle de gastos solo para A, J, P | auth |
 | `/reservas` | Calendario del SUM | auth |
 | `/votaciones` | Votaciones activas y resultados | auth |
 | `/admin/pagos` | Revisión y aprobación de pagos | A, T |

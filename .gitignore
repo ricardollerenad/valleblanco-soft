@@ -1,0 +1,32 @@
+# Secretos y entorno
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node (frontend, más adelante)
+node_modules/
+dist/
+
+# Datos sensibles y archivos subidos: nunca al repositorio
+*.xlsx
+data/
+media/
+
+# Sistema y editor
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
+
+# Base de datos
+*.sqlite3

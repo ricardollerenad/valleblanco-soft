@@ -1,6 +1,6 @@
 # ROADMAP: ValleBlanco-Soft (MVP Sistema de Administración de Condominios)
 
-> **Versión:** 1.0 (cierre de Fase 1, con reglas de negocio confirmadas por el cliente)
+> **Versión:** 1.1 (Fase 1 cerrada: reglas de negocio confirmadas y Excel de muestra analizado)
 > **Dominio de producción:** `torre2.arequipa.site`
 > **Marcas:** ✅ confirmado · 🟡 supuesto propuesto (validar) · ⏳ pendiente de respuesta
 
@@ -178,11 +178,30 @@ Nginx en el Host, Certbot, GitHub Actions por SSH, `docker compose up -d --build
 
 ---
 
-## 10. Preguntas abiertas (⏳)
-1. Día de vencimiento de la cuota mensual.
-2. ¿Una unidad puede tener varios copropietarios?
-3. Cómo funciona el refinanciamiento en la práctica.
-4. Reglas de votación: derecho a voto, peso del voto y quórum.
-5. Reglas del SUM: tarifa, garantía, horarios, quién aprueba.
-6. Brevo vs Gmail y control del DNS del dominio.
-7. Estructura del Excel (columnas, numeración de departamentos, mes de inicio del sistema).
+## 10. Decisiones cerradas en Fase 1 (✅ confirmadas por el cliente)
+
+| Tema | Decisión |
+|------|----------|
+| Vencimiento | **Último día de cada mes** |
+| Copropiedad | Puede haber varios propietarios; **solo el titular principal recibe el recibo** |
+| Refinanciamiento | Se pacta con el propietario el **número de cuotas y el monto de cada una**; admite **interés** y también **interés 0** |
+| Votaciones | **Un voto por unidad**; los inquilinos **no** votan; mayoría mínima **según reglamento** (configurable) |
+| SUM | Con **costo, garantía y horarios configurables**; las reservas las **aprueba el administrador** |
+| Correo | Brevo; el cliente **controla el DNS** de `arequipa.site` (SPF, DKIM y DMARC) |
+| Inicio del sistema | **Noviembre**, mostrando **toda la información histórica** |
+| Excel | Es solo **muestra**; los valores finales serán otros |
+
+## 11. Hallazgos del Excel que condicionan el alcance
+
+- El historial anterior a 2024 solo tiene estado mensual (`PAGO` / `DEBE` / `NC`), sin montos ni fechas; desde 2024 hay movimientos bancarios con detalle.
+- La muestra no incluye correos, teléfonos ni DNI de los residentes.
+- Los datos de la muestra terminan en dic-2024 (cuotas) y abr-2025 (banco), y el sistema arranca en nov-2026.
+- Detalle completo y reglas de conversión en `ARCHITECTURE.md`, secciones 2 y 7.
+
+## 12. Preguntas abiertas (⏳) antes del sprint S0
+1. Significado de `NC` y tratamiento de las celdas de estado vacías.
+2. Cobertura de datos entre 2025 y octubre de 2026 en el Excel final.
+3. Correos, teléfonos y DNI de los residentes.
+4. Depósitos bancarios en efectivo: ¿cuentan como "Depósito"?
+5. Umbral de morosidad: 4 o más cuotas vencidas.
+6. Visibilidad del detalle de gastos para propietarios e inquilinos.

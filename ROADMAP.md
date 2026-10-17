@@ -1,6 +1,6 @@
 # ROADMAP: ValleBlanco-Soft (MVP Sistema de Administración de Condominios)
 
-> **Versión:** 1.2 (Fase 1 cerrada; respuestas del cliente a las preguntas abiertas incorporadas)
+> **Versión:** 1.5 (Fase 1 cerrada; S0 completado, S1 en curso hasta T5; `RoleAssignment` pasa a S2)
 > **Dominio de producción:** `torre2.arequipa.site`
 > **Marcas:** ✅ confirmado · 🟡 supuesto propuesto (validar) · ⏳ pendiente de respuesta
 
@@ -65,7 +65,7 @@ Pasarela de pago en línea, facturación electrónica SUNAT, app móvil nativa, 
 | **Junta directiva** | Lectura de reportes financieros y gastos; consulta de pagos; crea/gestiona votaciones y comunicados (🟡) |
 | **Tesorero** (miembro de la Junta) | Todo lo de la Junta, más aprobar/rechazar pagos y registrar gastos (🟡) |
 | **Propietario** | Su estado de cuenta, subir comprobantes, recibos, resumen de ingresos/egresos, comunicados, reservas, votar |
-| **Inquilino** | Estado de cuenta de su unidad ✅, subir comprobantes, comunicados, reservas; voto no habilitado salvo delegación (🟡) |
+| **Inquilino** | Estado de cuenta de su unidad ✅, subir comprobantes, comunicados, reservas; **no vota** ✅ (ver sección 10) |
 
 Un usuario puede tener **varias unidades** ✅. El **tesorero** se modela como un cargo dentro de la Junta, no como un rol independiente. 🟡
 
@@ -111,7 +111,7 @@ Recibo interno con correlativo, unidad, titular, periodos cubiertos, monto, medi
 ---
 
 ## 6. Importación de datos (CSV)
-- Plantillas CSV definidas en la Fase 2: `unidades.csv`, `personas.csv`, `relaciones_unidad.csv`, `deudas_iniciales.csv`, `pagos_historicos.csv`.
+- Plantillas CSV definidas en la Fase 2 (fuente de verdad: `ARCHITECTURE.md`, sección 7.2): `units.csv`, `people.csv`, `occupancies.csv`, `charges.csv`, `payments.csv`, `expenses.csv`, `other_income.csv`.
 - Comportamiento: **modo simulación (dry-run)** que valida sin guardar, reporte de errores por fila, **idempotente** (reimportar no duplica) y transaccional.
 - Se define con el Excel real (columnas, formato de fechas, numeración de departamentos).
 - Correo y teléfono de los residentes son **opcionales** en la importación; la administración los completa o corrige después desde el sistema. ✅
@@ -135,7 +135,7 @@ Recibo interno con correlativo, unidad, titular, periodos cubiertos, monto, medi
 ## 8. Hoja de ruta por fases
 
 ### Fase 1: Requerimientos y Hoja de Ruta ✅ (este documento)
-Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** confirmar el umbral de morosidad (sección 12).
+Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** confirmar el umbral de morosidad (sección 13).
 
 ### Fase 2: Diseño de Arquitectura
 `ARCHITECTURE.md` con modelo ER, contrato de API REST, estructura Vue, autenticación, almacenamiento privado de comprobantes, diseño de plantillas CSV y design system.
@@ -144,9 +144,9 @@ Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** 
 
 | Sprint | Contenido | Release |
 |--------|-----------|---------|
-| S0 | Repo en GitHub, scaffolding del monorepo, `docker-compose.yml`, CI mínimo | R1 |
-| S1 | `accounts`: usuario custom, invitación, login, roles | R1 |
-| S2 | `properties`: condominio/torre/unidades, relación persona ↔ unidad | R1 |
+| S0 ✅ | Repo en GitHub, scaffolding del monorepo, `docker-compose.yml`, CI mínimo | R1 |
+| S1 🔄 | `accounts`: usuario por correo, invitación, aceptar invitación, login/logout, permisos básicos | R1 |
+| S2 | `properties`: condominio/torre/unidades, relación persona ↔ unidad, roles por torre (`RoleAssignment`) | R1 |
 | S3 | `finances` I: cargos mensuales, libro de movimientos, saldo | R1 |
 | S4 | `finances` II: pagos con comprobante, aprobación, aplicación, saldo a favor | R1 |
 | S5 | Recibo PDF, estado de cuenta, importación CSV | R1 |
@@ -156,13 +156,15 @@ Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** 
 | S9 | Reservas del SUM | R3 |
 | S10 | Votaciones | R3 |
 
+**Estado:** S0 cerrado (app `core`, Docker y CI en GitHub Actions). S1 en curso: usuario por correo, invitaciones, aceptación de invitación, login/logout, límite de intentos, permisos básicos e invitar por API hechos (89 pruebas, cobertura 99 %); falta la auditoría (T6).
+
 **Definición de "Hecho":** tests en verde, cobertura ≥ 80 % del módulo, lint y type-check limpios, OpenAPI actualizado, permisos por rol probados.
 
 ### Fase 4: Pruebas, Seguridad y Accesibilidad
 Revisión OWASP, IDOR entre unidades, límite de intentos en login, validación de subida de archivos, `manage.py check --deploy`, `pip-audit`/`npm audit`, WCAG 2.2 AA, pruebas E2E con Playwright. Salida: `SECURITY.md`.
 
 ### Fase 5: Despliegue CI/CD y Servidor
-Nginx en el Host, Certbot, GitHub Actions por SSH, `docker compose up -d --build`, backups y rollback. Salida: `DEPLOYMENT.md`.
+Nginx en el Host, Certbot, GitHub Actions por SSH, `docker compose up -d --build`, backups y rollback. Incluye declarar `TRUSTED_PROXY_COUNT` y una caché compartida para el límite de intentos de login (ver `ARCHITECTURE.md`, decisión 21). Salida: `DEPLOYMENT.md`.
 
 ---
 

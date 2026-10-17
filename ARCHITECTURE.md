@@ -1,6 +1,6 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.3 (borrador de Fase 2; S0 completado; decisiones de entorno y de titular principal)
+> **Versión:** 0.5 (borrador de Fase 2; S0 completado, S1 hasta T5; decisiones de entorno, titular principal, roles por torre y límite de intentos)
 > **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
 > **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
@@ -29,6 +29,8 @@
 | 17 | Base de datos por entorno | `DATABASES` usa PostgreSQL si existe `POSTGRES_DB`; si no, SQLite (solo desarrollo local). **El CI siempre usa PostgreSQL.** Lo que dependa de PostgreSQL (`ExclusionConstraint`, `select_for_update`, restricciones únicas parciales) se prueba contra PostgreSQL | SQLite no soporta esas funciones |
 | 18 | Calidad y pruebas | `ruff check` + `ruff format --check`, `makemigrations --check`, `pytest` con cobertura ≥ 80 % (`backend/pytest.ini`); se ejecutan en cada Pull Request | Misma exigencia local y en CI |
 | 19 | Modelo de usuario | `AUTH_USER_MODEL = "accounts.User"` se declara en S1, **antes** de la primera migración de `accounts` y de cualquier modelo que referencie al usuario. Se referencia siempre con `settings.AUTH_USER_MODEL` | Cambiarlo después obliga a reescribir migraciones |
+| 20 | Roles por torre | `RoleAssignment` se define en `properties` (S2), no en `accounts`, porque referencia a `Tower` y la dependencia es `accounts ◄ properties`. En S1 el primer administrador se crea con `createsuperuser` y los permisos básicos usan `IsAuthenticated` y `is_superuser` | Evita una dependencia circular entre apps |
+| 21 | Límite de intentos de login | 5 fallos por cuenta bloquean 15 minutos y 20 fallos bloquean la IP (responde 429 con `Retry-After`); un login correcto reinicia el contador de la cuenta. La IP se toma de `REMOTE_ADDR` y solo se confía en `X-Forwarded-For` si se declara `TRUSTED_PROXY_COUNT`. Los contadores viven en la caché de Django | Frena la fuerza bruta sin revelar qué cuentas existen. En producción hay que declarar el proxy y usar una caché compartida entre workers |
 
 ---
 
@@ -150,7 +152,6 @@ erDiagram
 |---------|--------------|--------|
 | `User` | `id`, `email` (único, login), `password`, `is_active` | Se crea solo por invitación o por la administración |
 | `Invitation` | `user`, `token_hash`, `expires_at`, `accepted_at`, `invited_by` | Token de un solo uso, vence en 72 h, se guarda solo el *hash* |
-| `RoleAssignment` | `user`, `role` (`ADMIN`, `BOARD`, `TREASURER`), `tower` | El **tesorero es un cargo de la junta**: `TREASURER` implica los permisos de `BOARD` |
 
 Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `UnitOccupancy` activas. Así no pueden quedar desactualizados al vender o alquilar una unidad.
 
@@ -163,6 +164,7 @@ Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `Un
 | `Unit` | `tower`, `code` ("101"), `floor`, `number`, `billing_start` (date), `is_active` | `UNIQUE(tower, code)` |
 | `Person` | `full_name`, `first_names`, `last_names`, `doc_type`, `doc_number`, `email`, `phone` | Existe aunque no tenga usuario; `user` (1:1 opcional a `accounts.User`) vive aquí para respetar la dependencia `accounts ◄ properties`. `email` y `phone` son opcionales y editables por la administración |
 | `UnitOccupancy` | `unit`, `person`, `relation` (`OWNER` / `TENANT`), `is_primary`, `start_date`, `end_date` | **Un solo titular principal vigente por unidad** (restricción única parcial). El titular principal recibe el recibo y es quien **vota**. 🟡 `CheckConstraint`: `is_primary` solo es válido si `relation = OWNER`, así una unidad nunca queda sin votante |
+| `RoleAssignment` | `user` (`accounts.User`), `role` (`ADMIN`, `BOARD`, `TREASURER`), `tower` | Se crea en S2. El **tesorero es un cargo de la junta**: `TREASURER` implica los permisos de `BOARD` |
 
 ### 4.3 `finances`
 
@@ -437,6 +439,21 @@ Tokens en variables CSS (colores con contraste ≥ 4.5:1, tamaños legibles, obj
 
 ---
 
-## 12. Entregables del sprint S1 (siguiente paso)
+## 12. Entregables del sprint S1 (en curso)
 
-App `accounts` con pruebas primero (RED): `User` por correo (`AUTH_USER_MODEL`), `Invitation` (token de un solo uso, vence en 72 h, solo se guarda el hash), `RoleAssignment` (`ADMIN`, `BOARD`, `TREASURER`), login y logout por sesión con CSRF, límite de intentos y `GET /auth/me/`. El enlace de invitación lo ve la administración (sin correo en el día 1). La recuperación de contraseña por correo pasa a R2 (depende de Brevo). `AuditLog` se usa para registrar invitaciones, accesos y cambios de roles.
+App `accounts` con pruebas primero (RED → GREEN):
+
+| Tarea | Contenido | Estado |
+|-------|-----------|--------|
+| T1 | `User` por correo y `AUTH_USER_MODEL` | ✅ |
+| T2 | `Invitation`: token de un solo uso, vence en 72 h, solo se guarda el hash; el enlace lo ve la administración (sin correo el día 1) | ✅ |
+| T3 | Aceptar invitación con validación de contraseña | ✅ |
+| T4 | Login y logout por sesión con CSRF, límite de intentos y `GET /auth/me/` | ✅ |
+| T5 | Permisos básicos (`IsAdmin`: `is_superuser` como administrador), `POST /users/` (crear e invitar; el enlace lo ve solo la administración) y `POST /auth/invitations/accept/` | ✅ |
+| T6 | Registro en `AuditLog` de invitaciones, accesos y cambios de roles | ⏳ |
+
+`RoleAssignment` pasa a S2 (decisión 20). La recuperación de contraseña por correo queda para R2, porque depende de Brevo. `AuditLog` guarda el actor como texto (`actor_id`, `actor_label`), sin clave foránea.
+
+**Estado:** T1 a T5 hechas (89 pruebas, cobertura 99 %). Queda T6. De la tabla de `/users/` de la sección 6 solo está `POST`; `GET /users/`, `PATCH /users/{id}/` y `resend-invitation` quedan para una tarea posterior. Aceptar una invitación no inicia sesión: la persona entra después por `/auth/login/`.
+
+**Pendiente para el despliegue (Fase 5):** declarar `TRUSTED_PROXY_COUNT = 1` en `prod.py` (detrás de Nginx) y pasar los contadores de intentos a una caché compartida entre los 2 workers de Gunicorn antes del día 1.

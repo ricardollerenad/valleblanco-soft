@@ -1,6 +1,6 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.2 (borrador de Fase 2, con respuestas del cliente)
+> **Versión:** 0.3 (borrador de Fase 2; S0 completado; decisiones de entorno y de titular principal)
 > **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
 > **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
@@ -25,6 +25,10 @@
 | 13 | Frontend | Vue 3 + **TypeScript** + Vite + Pinia + Vue Router + Tailwind | Tipado y estructura por *features* |
 | 14 | Multi-torre | Todas las tablas de dominio cuelgan de `Tower` (que cuelga de `Condominium`) | Integración futura de las 8 torres sin rehacer el esquema |
 | 15 | Configuración de negocio | Tablas de configuración en base de datos (tarifa, vencimiento, morosidad, mora, SUM) | Cambiar reglas sin redeploy |
+| 16 | Versiones de entorno | **Python 3.12** y **PostgreSQL 16**, iguales en el PC de desarrollo, el CI y la VPS | Evita diferencias entre entornos |
+| 17 | Base de datos por entorno | `DATABASES` usa PostgreSQL si existe `POSTGRES_DB`; si no, SQLite (solo desarrollo local). **El CI siempre usa PostgreSQL.** Lo que dependa de PostgreSQL (`ExclusionConstraint`, `select_for_update`, restricciones únicas parciales) se prueba contra PostgreSQL | SQLite no soporta esas funciones |
+| 18 | Calidad y pruebas | `ruff check` + `ruff format --check`, `makemigrations --check`, `pytest` con cobertura ≥ 80 % (`backend/pytest.ini`); se ejecutan en cada Pull Request | Misma exigencia local y en CI |
+| 19 | Modelo de usuario | `AUTH_USER_MODEL = "accounts.User"` se declara en S1, **antes** de la primera migración de `accounts` y de cualquier modelo que referencie al usuario. Se referencia siempre con `settings.AUTH_USER_MODEL` | Cambiarlo después obliga a reescribir migraciones |
 
 ---
 
@@ -144,7 +148,7 @@ erDiagram
 
 | Entidad | Campos clave | Reglas |
 |---------|--------------|--------|
-| `User` | `id`, `email` (único, login), `password`, `is_active`, `person` (1:1 opcional) | Se crea solo por invitación o por la administración |
+| `User` | `id`, `email` (único, login), `password`, `is_active` | Se crea solo por invitación o por la administración |
 | `Invitation` | `user`, `token_hash`, `expires_at`, `accepted_at`, `invited_by` | Token de un solo uso, vence en 72 h, se guarda solo el *hash* |
 | `RoleAssignment` | `user`, `role` (`ADMIN`, `BOARD`, `TREASURER`), `tower` | El **tesorero es un cargo de la junta**: `TREASURER` implica los permisos de `BOARD` |
 
@@ -157,8 +161,8 @@ Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `Un
 | `Condominium` | `name` | Hoy un registro |
 | `Tower` | `condominium`, `name`, `floors` | Hoy: "Torre 2" |
 | `Unit` | `tower`, `code` ("101"), `floor`, `number`, `billing_start` (date), `is_active` | `UNIQUE(tower, code)` |
-| `Person` | `full_name`, `first_names`, `last_names`, `doc_type`, `doc_number`, `email`, `phone` | Existe aunque no tenga usuario. `email` y `phone` son opcionales y editables por la administración |
-| `UnitOccupancy` | `unit`, `person`, `relation` (`OWNER` / `TENANT`), `is_primary`, `start_date`, `end_date` | **Un solo titular principal vigente por unidad** (restricción única parcial). El titular principal recibe el recibo y es quien **vota** |
+| `Person` | `full_name`, `first_names`, `last_names`, `doc_type`, `doc_number`, `email`, `phone` | Existe aunque no tenga usuario; `user` (1:1 opcional a `accounts.User`) vive aquí para respetar la dependencia `accounts ◄ properties`. `email` y `phone` son opcionales y editables por la administración |
+| `UnitOccupancy` | `unit`, `person`, `relation` (`OWNER` / `TENANT`), `is_primary`, `start_date`, `end_date` | **Un solo titular principal vigente por unidad** (restricción única parcial). El titular principal recibe el recibo y es quien **vota**. 🟡 `CheckConstraint`: `is_primary` solo es válido si `relation = OWNER`, así una unidad nunca queda sin votante |
 
 ### 4.3 `finances`
 
@@ -192,7 +196,7 @@ Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `Un
 
 ### 4.5 `core`
 
-`AuditLog` (quién, qué acción, sobre qué entidad, cambios, IP, fecha): se registra aprobación y rechazo de pagos, anulaciones, cambios de tarifa, convenios, importaciones y cambios de roles. Es de **solo escritura**.
+`AuditLog` (quién, qué acción, sobre qué entidad, cambios, IP, fecha): se registra aprobación y rechazo de pagos, anulaciones, cambios de tarifa, convenios, importaciones y cambios de roles. Es de **solo escritura**. El actor se guarda como texto (`actor_id`, `actor_label`), sin clave foránea, para que la auditoría sobreviva si se desactiva o borra un usuario.
 
 ---
 
@@ -425,6 +429,14 @@ Tokens en variables CSS (colores con contraste ≥ 4.5:1, tamaños legibles, obj
 
 ---
 
-## 11. Entregables del sprint S0 (siguiente paso)
+## 11. Entregables del sprint S0 ✅ (completado)
 
 `.gitignore`, `.env.example`, `docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile`, esqueleto `config/settings/{base,dev,prod}.py`, app `core` con modelo base y `AuditLog`, `ci.yml` mínimo y primera prueba (**RED**) de `/api/v1/health/`.
+
+**Resultado:** app `core` con `BaseModel` y `AuditLog`, endpoint `/api/v1/health/`, 15 pruebas con cobertura 100 %, `Dockerfile`, `docker-compose.yml` y `ci.yml` (trabajos `backend` y `docker`).
+
+---
+
+## 12. Entregables del sprint S1 (siguiente paso)
+
+App `accounts` con pruebas primero (RED): `User` por correo (`AUTH_USER_MODEL`), `Invitation` (token de un solo uso, vence en 72 h, solo se guarda el hash), `RoleAssignment` (`ADMIN`, `BOARD`, `TREASURER`), login y logout por sesión con CSRF, límite de intentos y `GET /auth/me/`. El enlace de invitación lo ve la administración (sin correo en el día 1). La recuperación de contraseña por correo pasa a R2 (depende de Brevo). `AuditLog` se usa para registrar invitaciones, accesos y cambios de roles.

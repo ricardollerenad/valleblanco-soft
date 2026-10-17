@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import NamedTuple
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
@@ -16,7 +17,23 @@ INVITATION_TTL = timedelta(hours=72)
 
 
 class UserAlreadyActiveError(Exception):
-    """El correo ya pertenece a una cuenta que existe y no está pendiente de invitación."""
+    """El correo ya tiene una cuenta que no está pendiente de invitación."""
+
+
+class InvitationError(Exception):
+    """Base de los errores al aceptar una invitación."""
+
+
+class InvitationNotFoundError(InvitationError):
+    """El token no corresponde a ninguna invitación."""
+
+
+class InvitationExpiredError(InvitationError):
+    """La invitación venció o fue reemplazada por una más nueva."""
+
+
+class InvitationAlreadyUsedError(InvitationError):
+    """La invitación ya se aceptó."""
 
 
 class InvitationResult(NamedTuple):
@@ -55,3 +72,33 @@ def invite_user(email, invited_by=None):
             invited_by=invited_by,
         )
     return InvitationResult(user=user, invitation=invitation, token=token)
+
+
+def accept_invitation(token, password):
+    """Activa la cuenta invitada y fija su contraseña. El token sirve una sola vez."""
+    token_hash = hash_token((token or "").strip())
+
+    with transaction.atomic():
+        invitation = (
+            Invitation.objects.select_for_update(of=("self",))
+            .select_related("user")
+            .filter(token_hash=token_hash)
+            .first()
+        )
+        if invitation is None:
+            raise InvitationNotFoundError
+        if invitation.accepted_at is not None:
+            raise InvitationAlreadyUsedError
+        if invitation.is_expired:
+            raise InvitationExpiredError
+
+        user = invitation.user
+        validate_password(password, user)
+
+        user.set_password(password)
+        user.is_active = True
+        user.save()
+
+        invitation.accepted_at = timezone.now()
+        invitation.save(update_fields=["accepted_at", "updated_at"])
+    return user

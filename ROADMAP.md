@@ -178,11 +178,11 @@ Nginx en el Host, Certbot, GitHub Actions por SSH, `docker compose up -d --build
 
 ---
 
-## 10. Preguntas abiertas (⏳)
-1. Día de vencimiento de la cuota mensual.
-2. ¿Una unidad puede tener varios copropietarios?
-3. Cómo funciona el refinanciamiento en la práctica.
-4. Reglas de votación: derecho a voto, peso del voto y quórum.
-5. Reglas del SUM: tarifa, garantía, horarios, quién aprueba.
+## 10. Preguntas cerradas (⏳)
+1. Día de vencimiento de la cuota mensual son los fines de mes.
+2. Una unidad puede tener mas de un propietario, pero solo se considera al titular
+3. El refinanciamiento funciona de la siguiente manera: Se conversa, se firma un acuerdo con N cuotas de pago con montos 
+4. Reglas de votación: Un propietario un voto, con quorum simple.
+5. Reglas del SUM: tarifa, garantía, horarios, aprobados por el administrador.
 6. Brevo vs Gmail y control del DNS del dominio.
-7. Estructura del Excel (columnas, numeración de departamentos, mes de inicio del sistema).
+

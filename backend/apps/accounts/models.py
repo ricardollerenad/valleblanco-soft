@@ -2,9 +2,11 @@
 
 from typing import ClassVar
 
+from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.utils import timezone
 
 from apps.core.models import BaseModel
 
@@ -57,3 +59,39 @@ class User(BaseModel, AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+
+class Invitation(BaseModel):
+    """Invitación de un solo uso. Solo se guarda el hash del token."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="invitations",
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sent_invitations",
+    )
+
+    class Meta:
+        ordering = ("-created_at",)
+        verbose_name = "invitación"
+        verbose_name_plural = "invitaciones"
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_usable(self):
+        return self.accepted_at is None and not self.is_expired
+
+    def __str__(self):
+        return f"Invitación para {self.user.email}"

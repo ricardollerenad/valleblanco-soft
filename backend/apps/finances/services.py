@@ -7,7 +7,7 @@ y `allocated_totals` es el único punto que habrá que reemplazar.
 
 import calendar
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import NamedTuple
 
@@ -26,6 +26,9 @@ DEFAULT_DELINQUENCY_THRESHOLD = 4
 MANUAL_CONCEPTS = frozenset(
     {Concept.ORDINARY_FEE, Concept.EXTRAORDINARY_FEE, Concept.ADJUSTMENT}
 )
+# Conceptos con tarifa propia: por ahora solo la cuota ordinaria.
+FEE_RATE_CONCEPTS = frozenset({Concept.ORDINARY_FEE})
+ONE_DAY = timedelta(days=1)
 
 
 class FinancesError(Exception):
@@ -38,6 +41,10 @@ class InvalidPeriodError(FinancesError):
 
 class FeeRateNotFoundError(FinancesError):
     """No hay una tarifa vigente para generar los cargos."""
+
+
+class InvalidFeeRateError(FinancesError):
+    """Los datos de la tarifa no cumplen las reglas."""
 
 
 class InvalidChargeError(FinancesError):
@@ -67,6 +74,24 @@ class DelinquentUnit(NamedTuple):
     unit: Unit
     months: int
     overdue_amount: Decimal
+
+
+class StatementLine(NamedTuple):
+    charge: Charge
+    allocated: Decimal
+    pending: Decimal
+    is_overdue: bool
+
+
+class Statement(NamedTuple):
+    unit: Unit
+    as_of: date
+    lines: list
+    pending_balance: Decimal
+    overdue_balance: Decimal
+    months_of_debt: int
+    threshold: int
+    is_delinquent: bool
 
 
 # --- Fechas y dinero ---------------------------------------------------------
@@ -124,6 +149,67 @@ def current_fee_rate(tower, concept, on_date):
         .order_by("-valid_from")
         .first()
     )
+
+
+def create_fee_rate(
+    tower, concept, amount, valid_from, valid_to=None, *, actor=None, ip=None
+):
+    """Crea una tarifa. Debe empezar después de la última y cierra la abierta anterior.
+
+    No toca cargos ya emitidos: solo rige para los que se generen desde `valid_from`.
+    """
+    if concept not in FEE_RATE_CONCEPTS:
+        raise InvalidFeeRateError("Ese concepto no tiene tarifa.")
+    try:
+        amount = to_money(amount)
+    except InvalidChargeError as error:
+        raise InvalidFeeRateError(str(error)) from None
+    if valid_to is not None and valid_to < valid_from:
+        raise InvalidFeeRateError(
+            "El fin de la tarifa no puede ser anterior al inicio."
+        )
+
+    with transaction.atomic():
+        rates = list(
+            FeeRate.objects.select_for_update().filter(tower=tower, concept=concept)
+        )
+        if any(rate.valid_from >= valid_from for rate in rates):
+            raise InvalidFeeRateError(
+                "La nueva tarifa debe empezar después de la última registrada."
+            )
+        if any(
+            rate.valid_to is not None and rate.valid_to >= valid_from for rate in rates
+        ):
+            raise InvalidFeeRateError("La tarifa se superpone con una ya registrada.")
+
+        previous = next((rate for rate in rates if rate.valid_to is None), None)
+        if previous is not None:
+            previous.valid_to = valid_from - ONE_DAY
+            previous.save(update_fields=["valid_to", "updated_at"])
+
+        rate = FeeRate.objects.create(
+            tower=tower,
+            concept=concept,
+            amount=amount,
+            valid_from=valid_from,
+            valid_to=valid_to,
+        )
+        log_event(
+            "FEE_RATE_CREATED",
+            "FeeRate",
+            rate.pk,
+            actor=actor,
+            changes={
+                "tower": tower.name,
+                "concept": concept,
+                "amount": str(amount),
+                "valid_from": valid_from.isoformat(),
+                "valid_to": valid_to.isoformat() if valid_to else None,
+                "closed_previous": str(previous.pk) if previous else None,
+            },
+            ip=ip,
+        )
+    return rate
 
 
 # --- Generación mensual ------------------------------------------------------
@@ -339,6 +425,16 @@ def _pending_by_charge(charges):
     }
 
 
+def pending_amounts(charges):
+    """Pendiente de cada cargo: `{charge_id: Decimal}`. Solo los abiertos deben algo."""
+    charges = list(charges)
+    pending = _pending_by_charge(charges)
+    return {
+        charge.pk: pending[charge.pk] if charge.status == Charge.Status.OPEN else ZERO
+        for charge in charges
+    }
+
+
 def pending_amount(charge):
     return _pending_by_charge([charge])[charge.pk]
 
@@ -400,3 +496,33 @@ def delinquent_units(tower, as_of=None):
     ]
     result.sort(key=lambda item: (-item.months, item.unit.floor, item.unit.number))
     return result
+
+
+def unit_statement(unit, as_of=None):
+    """Estado de cuenta de la unidad: cargos no anulados, saldos y morosidad."""
+    as_of = as_of or timezone.localdate()
+    charges = list(Charge.objects.filter(unit=unit).exclude(status=Charge.Status.VOID))
+    allocated = allocated_totals([charge.pk for charge in charges])
+    pending = pending_amounts(charges)
+
+    lines = [
+        StatementLine(
+            charge=charge,
+            allocated=allocated.get(charge.pk, ZERO),
+            pending=pending[charge.pk],
+            is_overdue=pending[charge.pk] > 0 and charge.due_date < as_of,
+        )
+        for charge in charges
+    ]
+    overdue = [line for line in lines if line.is_overdue]
+    threshold = delinquency_threshold(unit.tower)
+    return Statement(
+        unit=unit,
+        as_of=as_of,
+        lines=lines,
+        pending_balance=sum((line.pending for line in lines), ZERO),
+        overdue_balance=sum((line.pending for line in overdue), ZERO),
+        months_of_debt=len(overdue),
+        threshold=threshold,
+        is_delinquent=len(overdue) >= threshold,
+    )

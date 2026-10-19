@@ -5,9 +5,17 @@ from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
 
 from apps.finances.models import FeeRate
-from apps.properties.models import Condominium, Tower, Unit
+from apps.properties.models import (
+    Condominium,
+    Person,
+    RoleAssignment,
+    Tower,
+    Unit,
+    UnitOccupancy,
+)
 
 User = get_user_model()
 PASSWORD = "Cielo-Azul-9347-Zq"
@@ -92,3 +100,81 @@ def make_charge():
         )
 
     return _make
+
+
+# --- Personas y roles (S3-B) --------------------------------------------------
+
+
+def client_for(user):
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
+@pytest.fixture
+def admin_client(admin):
+    return client_for(admin)
+
+
+@pytest.fixture
+def make_user():
+    def _make(email):
+        return User.objects.create_user(email, PASSWORD)
+
+    return _make
+
+
+@pytest.fixture
+def give_role(tower):
+    def _give(user, role):
+        return RoleAssignment.objects.create(user=user, role=role, tower=tower)
+
+    return _give
+
+
+@pytest.fixture
+def make_resident(make_user):
+    """Crea un usuario con persona y una ocupación vigente en la unidad."""
+
+    def _make(email, unit, relation="OWNER", is_primary=False, **extra):
+        user = make_user(email)
+        person = Person.objects.create(full_name=email.split("@")[0], user=user)
+        extra.setdefault("start_date", date(2024, 1, 1))
+        UnitOccupancy.objects.create(
+            unit=unit,
+            person=person,
+            relation=relation,
+            is_primary=is_primary,
+            **extra,
+        )
+        return user
+
+    return _make
+
+
+@pytest.fixture
+def actores(tower, unit, unit2, admin, make_user, give_role, make_resident):
+    """Un cliente por rol: la unidad 101 es de `propietario` e `inquilino`;
+    `vecino` es propietario de la 102."""
+    admin_rol = make_user("admin-rol@valleblanco.pe")
+    give_role(admin_rol, "ADMIN")
+    junta = make_user("junta@valleblanco.pe")
+    give_role(junta, "BOARD")
+    tesorero = make_user("tesorero@valleblanco.pe")
+    give_role(tesorero, "TREASURER")
+    return {
+        "anonimo": APIClient(),
+        "admin": client_for(admin),
+        "admin_rol": client_for(admin_rol),
+        "junta": client_for(junta),
+        "tesorero": client_for(tesorero),
+        "propietario": client_for(
+            make_resident("propietario@valleblanco.pe", unit, "OWNER", True)
+        ),
+        "inquilino": client_for(
+            make_resident("inquilino@valleblanco.pe", unit, "TENANT")
+        ),
+        "vecino": client_for(
+            make_resident("vecino@valleblanco.pe", unit2, "OWNER", True)
+        ),
+    }

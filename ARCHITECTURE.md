@@ -1,6 +1,6 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.6 (borrador de Fase 2; S0, S1 y S2 completados; decisiones de perfil por registro, titular principal, códigos de unidad y API de propiedades)
+> **Versión:** 0.7 (borrador de Fase 2; S0, S1, S2 y S3 completados; decisiones de tarifas, visibilidad de cargos, estado de cuenta y morosidad en la API de finanzas)
 > **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
 > **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
@@ -34,6 +34,11 @@
 | 24 | Códigos de unidad y carga inicial | `seed_tower` crea la torre con código = piso + número de 2 cifras (`101`…`1008`) y es repetible. `Unit.billing_start` es opcional hasta que la importación lo informe | La numeración real saldrá del Excel final; no se bloquea S2 esperándolo |
 | 25 | Convenciones de la API de propiedades | Paginación de 25 desde `core.pagination`; filtros por parámetros sin `django-filter` por ahora; unidades ajenas devuelven 404 (no 403) para no revelar su existencia. Endpoints añadidos: `POST /people/{id}/invite/` y `/role-assignments/` | Sin ellos no había forma de enlazar una persona con su cuenta ni de dar roles |
 | 26 | Alcance del rol ADMIN por torre | Mientras el MVP tenga una sola torre, `ADMIN` en cualquier torre vale como administrador global | Se acotará por torre cuando existan las 8 torres |
+| 27 | Alta de tarifas | `POST /fee-rates/` exige `tower`, solo admite `ORDINARY_FEE` y una fecha de inicio posterior a la última tarifa de esa torre y concepto. Cierra la tarifa abierta anterior el día previo y rechaza superposiciones | Hay una sola tarifa vigente por mes y los cargos ya emitidos no cambian |
+| 28 | Cargos visibles por rol | Administración, junta y tesorería ven todos los estados. Propietario e inquilino ven solo los cargos de sus unidades con ocupación vigente y nunca los `VOID`. Filtrar por una unidad ajena o inexistente devuelve 404; un valor mal formado, 400 | Mismo criterio de IDOR de la decisión 25 |
+| 29 | Estado de cuenta (JSON) | No se pagina. Excluye los cargos `VOID` y acepta `as_of` (por defecto, hoy). Cada línea trae monto, aplicado, pendiente y si está vencida; el resumen trae saldo, vencido, meses de deuda, umbral y si es moroso. Solo los cargos `OPEN` deben algo | El saldo a favor llega con S4; `allocated_totals` es el único punto que se reemplaza |
+| 30 | Reporte de morosidad | `GET /reports/delinquency/` (A, J, T) no se pagina (máximo 80 unidades por torre), acepta `tower` y `as_of` e informa el umbral de cada torre. Propietario e inquilino reciben 403 | El umbral se configura en `FinanceSettings` |
+| 31 | Errores de la API de finanzas | 400 `validation_error` (campos), `invalid_charge`, `invalid_fee_rate`, `invalid_period`; 409 `charge_exists`, `charge_not_open`, `charge_has_allocations`, `fee_rate_not_found`. `generate` es idempotente y siempre responde 200 | Un conflicto de estado no es un error de formato |
 ---
 
 ## 2. Hallazgos del Excel de muestra y su impacto en el diseño
@@ -473,10 +478,43 @@ App `properties`, desarrollada en un solo ciclo de pruebas (RED → GREEN) para 
  | Auditoría | `OCCUPANCY_CREATED`, `OCCUPANCY_CLOSED`, `PRIMARY_HOLDER_CHANGED`, `ROLE_ASSIGNED`, `ROLE_REVOKED`, `PERSON_CREATED`, `PERSON_UPDATED`, `PERSON_INVITED`, `UNIT_UPDATED` |
  | Carga inicial | `python manage.py seed_tower` crea la Torre 2 con sus 80 unidades (decisión 24) |
  
- **Resultado:** 252 pruebas en total, cobertura 99 %.
+ **Resultado:** 255 pruebas en total, cobertura 99 %.
  
  **Pendiente heredado:**
  - Confirmar las restricciones de la base de datos con PostgreSQL en el CI; la verificación previa se hizo con SQLite.
  - Esquema OpenAPI (`drf-spectacular`) y filtros con `django-filter`, previstos en la sección 6 y aún no incorporados.
  - Si dos solicitudes crean a la vez personas con el mismo documento, la segunda devuelve 500 en lugar de 400.
  - `GET /users/`, `PATCH /users/{id}/` y `resend-invitation`.
+
+## 14. Entregables del sprint S3 ✅ (completado)
+
+App `finances`, en dos partes con ciclo RED → GREEN cada una:
+
+| Parte | Contenido |
+|-------|-----------|
+| S3-A | Modelos `FinanceSettings`, `FeeRate` y `Charge` con restricciones en la base de datos. Servicios de generación mensual idempotente, cargo manual, anulación, saldos y morosidad. Comando `generate_charges` (se programa con `cron` el día 1) |
+| S3-B | API de tarifas, cargos, generación, anulación, estado de cuenta y morosidad (decisiones 27 a 31). Servicios `create_fee_rate`, `pending_amounts` y `unit_statement` |
+
+| Método | Ruta | Roles |
+|--------|------|-------|
+| GET / POST | `/fee-rates/` | auth (lectura) · A (alta) |
+| GET / POST | `/charges/` | A, J, T (todos) y P, I (solo lo propio) · A (alta) |
+| POST | `/charges/generate/` | A |
+| POST | `/charges/{id}/void/` | A |
+| GET | `/units/{id}/statement/` | A, J, T · P, I (propio) |
+| GET | `/reports/delinquency/` | A, J, T |
+
+Auditoría: `FEE_RATE_CREATED`, `CHARGES_GENERATED`, `CHARGE_CREATED` y `CHARGE_VOIDED`, con la IP del cliente. Las pruebas incluyen la matriz rol × endpoint (8 roles) y el aislamiento entre unidades (404).
+
+**Resultado:** 565 pruebas en total (S3-A, 99; S3-B, 211), cobertura 99 %.
+
+**Fuera de S3 (sigue previsto):**
+- `Payment`, `PaymentVoucher`, `PaymentAllocation` y `Receipt` (S4 y S5); hasta entonces `allocated_totals` devuelve vacío y todo cargo abierto está pendiente por completo.
+- `Charge.agreement` y `Charge.reservation` se crean con convenios (S8) y reservas (S9).
+- Estado de cuenta en PDF, importación CSV, gastos y convenios.
+
+**Pendiente heredado:**
+- Confirmar las restricciones de la base de datos con PostgreSQL en el CI; la verificación se hizo con SQLite.
+- Esquema OpenAPI (`drf-spectacular`) y `django-filter`: S3 valida los filtros con serializers y parámetros de la URL.
+- `GET /users/`, `PATCH /users/{id}/` y `resend-invitation`.
+- La carrera entre dos altas simultáneas de personas con el mismo documento (500 en lugar de 400).

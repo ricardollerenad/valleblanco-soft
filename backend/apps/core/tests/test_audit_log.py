@@ -1,3 +1,4 @@
+# backend/apps/core/tests/test_audit_log.py
 """RED: AuditLog (registro de auditoría de solo escritura) todavía no existe."""
 
 import uuid

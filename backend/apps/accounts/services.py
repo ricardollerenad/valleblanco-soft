@@ -11,6 +11,8 @@ from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
 
+from apps.core.audit import log_event
+
 from .models import Invitation
 
 INVITATION_TTL = timedelta(hours=72)
@@ -46,7 +48,7 @@ def hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def invite_user(email, invited_by=None):
+def invite_user(email, invited_by=None, ip=None):
     """Crea (o reutiliza) el usuario pendiente y emite una invitación nueva."""
     User = get_user_model()
     email = (email or "").strip().lower()
@@ -71,10 +73,21 @@ def invite_user(email, invited_by=None):
             expires_at=now + INVITATION_TTL,
             invited_by=invited_by,
         )
+        log_event(
+            "INVITATION_CREATED",
+            "Invitation",
+            invitation.pk,
+            actor=invited_by,
+            changes={
+                "email": email,
+                "expires_at": invitation.expires_at.isoformat(),
+            },
+            ip=ip,
+        )
     return InvitationResult(user=user, invitation=invitation, token=token)
 
 
-def accept_invitation(token, password):
+def accept_invitation(token, password, ip=None):
     """Activa la cuenta invitada y fija su contraseña. El token sirve una sola vez."""
     token_hash = hash_token((token or "").strip())
 
@@ -101,4 +114,12 @@ def accept_invitation(token, password):
 
         invitation.accepted_at = timezone.now()
         invitation.save(update_fields=["accepted_at", "updated_at"])
+        log_event(
+            "INVITATION_ACCEPTED",
+            "Invitation",
+            invitation.pk,
+            actor=user,
+            changes={"email": user.email},
+            ip=ip,
+        )
     return user

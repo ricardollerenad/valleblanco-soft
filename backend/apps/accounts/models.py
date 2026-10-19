@@ -1,3 +1,4 @@
+# backend/apps/accounts/models.py
 """Usuario por correo. Las invitaciones y los roles se añaden en tareas siguientes."""
 
 from typing import ClassVar

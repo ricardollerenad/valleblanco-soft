@@ -1,3 +1,4 @@
+# backend/apps/core/models.py
 """Modelos base del proyecto."""
 
 import uuid

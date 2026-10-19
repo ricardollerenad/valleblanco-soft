@@ -59,3 +59,9 @@ def register_failure(email, ip):
 
 def clear_failures(email):
     cache.delete(_account_key(email))
+
+
+def should_log_block(email):
+    """True solo la primera vez por ventana de bloqueo, para no inundar la auditoría."""
+    key = _account_key(email).replace("login-fail", "login-block-logged")
+    return cache.add(key, 1, timeout=lockout_seconds())

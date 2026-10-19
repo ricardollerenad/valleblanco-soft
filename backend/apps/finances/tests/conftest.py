@@ -1,5 +1,7 @@
 """Fixtures compartidas de las pruebas de finanzas."""
 
+import itertools
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -178,3 +180,70 @@ def actores(tower, unit, unit2, admin, make_user, give_role, make_resident):
             make_resident("vecino@valleblanco.pe", unit2, "OWNER", True)
         ),
     }
+
+
+# --- Pagos y comprobantes (S4-A) ---------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def voucher_root(settings, tmp_path):
+    """Los comprobantes de las pruebas van a un directorio temporal, nunca al real."""
+    settings.VOUCHER_ROOT = tmp_path / "vouchers"
+    return settings.VOUCHER_ROOT
+
+
+@pytest.fixture
+def make_payment():
+    """Crea un pago directo en la BD (sin pasar por los servicios)."""
+    from django.utils import timezone
+
+    from apps.finances import models
+
+    contador = itertools.count(1)
+
+    def _make(unit, amount="80.00", **extra):
+        extra.setdefault("method", "TRANSFER")
+        extra.setdefault("operation_number", f"OP{next(contador)}")
+        extra.setdefault("paid_at", date(2025, 3, 1))
+        extra.setdefault("status", "PENDING")
+        extra.setdefault("source", "RESIDENT")
+        if extra["status"] == "APPROVED":
+            extra.setdefault("reviewed_at", timezone.now())
+        if extra["status"] == "REJECTED":
+            extra.setdefault("rejection_reason", "Motivo de prueba")
+        return models.Payment.objects.create(unit=unit, amount=Decimal(amount), **extra)
+
+    return _make
+
+
+@pytest.fixture
+def pay(make_payment, admin):
+    """Crea un pago y, por defecto, lo aprueba con los servicios reales."""
+    from apps.finances import services
+
+    def _pay(unit, amount="80.00", *, approve=True, **extra):
+        payment = make_payment(unit, amount, **extra)
+        if approve:
+            services.approve_payment(payment, actor=admin)
+        return payment
+
+    return _pay
+
+
+@pytest.fixture
+def voucher_file():
+    """Bytes con la firma real de cada tipo; `salt` distingue el contenido."""
+    cabeceras = {
+        "jpg": b"\xff\xd8\xff\xe0\x00\x10JFIF\x00",
+        "png": b"\x89PNG\r\n\x1a\n",
+        "webp": b"RIFF\x24\x00\x00\x00WEBPVP8 ",
+        "pdf": b"%PDF-1.7\n",
+    }
+
+    def _make(kind="jpg", salt=None, size=None):
+        cuerpo = cabeceras[kind] + (uuid.uuid4().bytes if salt is None else salt)
+        if size is not None:
+            cuerpo += b"\x00" * (size - len(cuerpo))
+        return cuerpo
+
+    return _make

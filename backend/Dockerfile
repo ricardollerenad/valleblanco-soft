@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    VOUCHER_ROOT=/data/vouchers
 
 WORKDIR /app
 
@@ -14,7 +15,8 @@ RUN pip install -r ${REQUIREMENTS_FILE}
 COPY . .
 
 # Sin privilegios de administrador dentro del contenedor.
-RUN useradd --create-home app && chown -R app:app /app
+# /data/vouchers es el punto de montaje del volumen nombrado de comprobantes.
+RUN useradd --create-home app && mkdir -p /data/vouchers && chown -R app:app /app /data
 USER app
 
 EXPOSE 8000

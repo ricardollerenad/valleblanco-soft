@@ -88,6 +88,10 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 
+# Comprobantes de pago: directorio PRIVADO, nunca servido por una URL pública.
+# En Docker es un volumen nombrado (Dockerfile: /data/vouchers).
+VOUCHER_ROOT = Path(os.environ.get("VOUCHER_ROOT") or BASE_DIR / "var" / "vouchers")
+
 X_FRAME_OPTIONS = "DENY"
 
 REST_FRAMEWORK = {

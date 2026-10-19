@@ -1,6 +1,6 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.3 (borrador de Fase 2; S0 completado; decisiones de entorno y de titular principal)
+> **Versión:** 0.6 (borrador de Fase 2; S0, S1 y S2 completados; decisiones de perfil por registro, titular principal, códigos de unidad y API de propiedades)
 > **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
 > **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
@@ -29,7 +29,11 @@
 | 17 | Base de datos por entorno | `DATABASES` usa PostgreSQL si existe `POSTGRES_DB`; si no, SQLite (solo desarrollo local). **El CI siempre usa PostgreSQL.** Lo que dependa de PostgreSQL (`ExclusionConstraint`, `select_for_update`, restricciones únicas parciales) se prueba contra PostgreSQL | SQLite no soporta esas funciones |
 | 18 | Calidad y pruebas | `ruff check` + `ruff format --check`, `makemigrations --check`, `pytest` con cobertura ≥ 80 % (`backend/pytest.ini`); se ejecutan en cada Pull Request | Misma exigencia local y en CI |
 | 19 | Modelo de usuario | `AUTH_USER_MODEL = "accounts.User"` se declara en S1, **antes** de la primera migración de `accounts` y de cualquier modelo que referencie al usuario. Se referencia siempre con `settings.AUTH_USER_MODEL` | Cambiarlo después obliga a reescribir migraciones |
-
+| 22 | Perfil por registro | `/auth/me/` y el login obtienen roles y unidades de `core.profile`, donde cada app registra un proveedor (`properties` lo hace en `ready()`). `IsAdmin` significa tener el rol `ADMIN`: superusuario o `RoleAssignment`. Propietario e inquilino se derivan de las ocupaciones vigentes | `accounts` no puede importar `properties`; así la dependencia sigue yendo de izquierda a derecha |
+| 23 | Titular principal y ocupaciones | Designar un nuevo titular principal (al crear o por `PATCH`) **reemplaza** al anterior, que sigue como copropietario. No se puede quitar el titular sin designar otro, pero sí cerrar su ocupación (venta). La fecha de cierre no puede ser futura ni anterior al inicio. Las restricciones viven en la base de datos | Una unidad no queda con dos votantes y el historial de ocupaciones se conserva |
+| 24 | Códigos de unidad y carga inicial | `seed_tower` crea la torre con código = piso + número de 2 cifras (`101`…`1008`) y es repetible. `Unit.billing_start` es opcional hasta que la importación lo informe | La numeración real saldrá del Excel final; no se bloquea S2 esperándolo |
+| 25 | Convenciones de la API de propiedades | Paginación de 25 desde `core.pagination`; filtros por parámetros sin `django-filter` por ahora; unidades ajenas devuelven 404 (no 403) para no revelar su existencia. Endpoints añadidos: `POST /people/{id}/invite/` y `/role-assignments/` | Sin ellos no había forma de enlazar una persona con su cuenta ni de dar roles |
+| 26 | Alcance del rol ADMIN por torre | Mientras el MVP tenga una sola torre, `ADMIN` en cualquier torre vale como administrador global | Se acotará por torre cuando existan las 8 torres |
 ---
 
 ## 2. Hallazgos del Excel de muestra y su impacto en el diseño
@@ -437,6 +441,42 @@ Tokens en variables CSS (colores con contraste ≥ 4.5:1, tamaños legibles, obj
 
 ---
 
-## 12. Entregables del sprint S1 (siguiente paso)
+## 12. Entregables del sprint S1 ✅ (completado)
 
-App `accounts` con pruebas primero (RED): `User` por correo (`AUTH_USER_MODEL`), `Invitation` (token de un solo uso, vence en 72 h, solo se guarda el hash), `RoleAssignment` (`ADMIN`, `BOARD`, `TREASURER`), login y logout por sesión con CSRF, límite de intentos y `GET /auth/me/`. El enlace de invitación lo ve la administración (sin correo en el día 1). La recuperación de contraseña por correo pasa a R2 (depende de Brevo). `AuditLog` se usa para registrar invitaciones, accesos y cambios de roles.
+App `accounts` con pruebas primero (RED → GREEN):
+
+| Tarea | Descripción | Estado |
+|-------|-------------|--------|
+| T1 | Modelo `User` (`AUTH_USER_MODEL`) y `Invitation` | ✅ |
+| T2 | `POST /users/` (crear e invitar; el enlace lo ve solo la administración) | ✅ |
+| T3 | Aceptar invitación con validación de contraseña | ✅ |
+| T4 | Login y logout por sesión con CSRF, límite de intentos y `GET /auth/me/` | ✅ |
+| T5 | Permisos básicos (`IsAdmin`: `is_superuser` como administrador), `POST /users/` (crear e invitar; el enlace lo ve solo la administración) y `POST /auth/invitations/accept/` | ✅ |
+| T6 | Registro en `AuditLog` de invitaciones (`INVITATION_CREATED`, `INVITATION_ACCEPTED`) y accesos (`LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `LOGIN_BLOCKED`, `LOGOUT`). Los bloqueos se registran una sola vez por ventana. Nunca se guardan contraseñas ni tokens. Los cambios de roles se auditan desde S2 | ✅ |
+
+`RoleAssignment` pasa a S2 (decisión 20). La recuperación de contraseña por correo queda para R2, porque depende de Brevo. `AuditLog` guarda el actor como texto (`actor_id`, `actor_label`), sin clave foránea.
+
+**Resultado:** T1 a T6 hechas (103 pruebas, cobertura 99 %). De la tabla de `/users/` de la sección 6 solo está `POST`; `GET /users/`, `PATCH /users/{id}/` y `resend-invitation` quedan para una tarea posterior. Aceptar una invitación no inicia sesión: la persona entra después por `/auth/login/`. Las acciones de auditoría se escriben en `MAYÚSCULAS_CON_GUION_BAJO`.
+
+**Pendiente para el despliegue (Fase 5):** declarar `TRUSTED_PROXY_COUNT = 1` en `prod.py` (detrás de Nginx) y pasar los contadores de intentos a una caché compartida entre los 2 workers de Gunicorn antes del día 1.
+
+## 13. Entregables del sprint S2 ✅ (completado)
+
+App `properties`, desarrollada en un solo ciclo de pruebas (RED → GREEN) para todo el sprint:
+ 
+ | Parte | Contenido |
+ |-------|-----------|
+ | Modelos | `Condominium`, `Tower`, `Unit`, `Person`, `UnitOccupancy` y `RoleAssignment`, con sus restricciones en la base de datos (decisión 23) |
+ | Servicios | Crear, cerrar y designar titular en ocupaciones; asignar y revocar roles; invitar a una persona y enlazar su cuenta |
+ | API | `/units/`, `/people/` (con `/invite/`), `/units/{id}/occupancies/`, `/occupancies/{id}/` y `/role-assignments/`; propietarios e inquilinos solo ven sus unidades |
+ | Perfil | `/auth/me/` y el login devuelven roles y unidades reales (decisión 22) |
+ | Auditoría | `OCCUPANCY_CREATED`, `OCCUPANCY_CLOSED`, `PRIMARY_HOLDER_CHANGED`, `ROLE_ASSIGNED`, `ROLE_REVOKED`, `PERSON_CREATED`, `PERSON_UPDATED`, `PERSON_INVITED`, `UNIT_UPDATED` |
+ | Carga inicial | `python manage.py seed_tower` crea la Torre 2 con sus 80 unidades (decisión 24) |
+ 
+ **Resultado:** 252 pruebas en total, cobertura 99 %.
+ 
+ **Pendiente heredado:**
+ - Confirmar las restricciones de la base de datos con PostgreSQL en el CI; la verificación previa se hizo con SQLite.
+ - Esquema OpenAPI (`drf-spectacular`) y filtros con `django-filter`, previstos en la sección 6 y aún no incorporados.
+ - Si dos solicitudes crean a la vez personas con el mismo documento, la segunda devuelve 500 en lugar de 400.
+ - `GET /users/`, `PATCH /users/{id}/` y `resend-invitation`.

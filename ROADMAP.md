@@ -1,6 +1,6 @@
 # ROADMAP: ValleBlanco-Soft (MVP Sistema de Administración de Condominios)
 
-> **Versión:** 1.2 (Fase 1 cerrada; respuestas del cliente a las preguntas abiertas incorporadas)
+> **Versión:** 1.6 (Fase 1 cerrada; S0, S1 y S2 completados; siguiente: S3)
 > **Dominio de producción:** `torre2.arequipa.site`
 > **Marcas:** ✅ confirmado · 🟡 supuesto propuesto (validar) · ⏳ pendiente de respuesta
 
@@ -145,9 +145,9 @@ Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** 
 | Sprint | Contenido | Release |
 |--------|-----------|---------|
 | S0 | Repo en GitHub, scaffolding del monorepo, `docker-compose.yml`, CI mínimo | R1 |
-| S1 | `accounts`: usuario custom, invitación, login, roles | R1 |
-| S2 | `properties`: condominio/torre/unidades, relación persona ↔ unidad | R1 |
-| S3 | `finances` I: cargos mensuales, libro de movimientos, saldo | R1 |
+| S1 ✅ | `accounts`: usuario por correo, invitación, aceptar invitación, login/logout, permisos básicos | R1 |
+| S2 ✅ | `properties`: condominio/torre/unidades, relación persona ↔ unidad, roles por torre (`RoleAssignment`) | R1 |
+| S3 ⏭ | `finances` I: cargos mensuales, libro de movimientos, saldo | R1 |
 | S4 | `finances` II: pagos con comprobante, aprobación, aplicación, saldo a favor | R1 |
 | S5 | Recibo PDF, estado de cuenta, importación CSV | R1 |
 | S6 | Frontend base: design system, login, dashboards admin/residente, flujo de pago | R1 |
@@ -156,6 +156,7 @@ Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** 
 | S9 | Reservas del SUM | R3 |
 | S10 | Votaciones | R3 |
 
+**Estado:** S0, S1 y S2 cerrados (252 pruebas, cobertura 99 %): `core`, `accounts` con invitación, login, límite de intentos, permisos y auditoría, y `properties` con unidades, personas, ocupaciones, roles por torre y carga de la Torre 2. Siguiente: S3 (`finances` I).
 **Definición de "Hecho":** tests en verde, cobertura ≥ 80 % del módulo, lint y type-check limpios, OpenAPI actualizado, permisos por rol probados.
 
 ### Fase 4: Pruebas, Seguridad y Accesibilidad

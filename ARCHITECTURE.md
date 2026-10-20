@@ -1,6 +1,6 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.7 (borrador de Fase 2; S0, S1, S2 y S3 completados; decisiones de tarifas, visibilidad de cargos, estado de cuenta y morosidad en la API de finanzas)
+> **Versión:** 0.8 (borrador de Fase 2; S0 a S4 completados; decisiones de la API de pagos: permisos, comprobantes privados, advertencias y errores)
 > **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
 > **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
@@ -39,6 +39,14 @@
 | 29 | Estado de cuenta (JSON) | No se pagina. Excluye los cargos `VOID` y acepta `as_of` (por defecto, hoy). Cada línea trae monto, aplicado, pendiente y si está vencida; el resumen trae saldo, vencido, meses de deuda, umbral y si es moroso. Solo los cargos `OPEN` deben algo | El saldo a favor llega con S4; `allocated_totals` es el único punto que se reemplaza |
 | 30 | Reporte de morosidad | `GET /reports/delinquency/` (A, J, T) no se pagina (máximo 80 unidades por torre), acepta `tower` y `as_of` e informa el umbral de cada torre. Propietario e inquilino reciben 403 | El umbral se configura en `FinanceSettings` |
 | 31 | Errores de la API de finanzas | 400 `validation_error` (campos), `invalid_charge`, `invalid_fee_rate`, `invalid_period`; 409 `charge_exists`, `charge_not_open`, `charge_has_allocations`, `fee_rate_not_found`. `generate` es idempotente y siempre responde 200 | Un conflicto de estado no es un error de formato |
+| 32 | Pagos: quién ve y quién registra | `GET /payments/` y `/payments/{id}/`: A, J y T ven todos; P e I, solo los de sus unidades con ocupación vigente (incluye rechazados y anulados). `POST /payments/`: A y T a nombre de cualquier unidad (`source = STAFF`); P e I solo en sus unidades (`RESIDENT`). Unidad ajena o inexistente: 404. La junta sin unidad no registra (404). Siempre nace `PENDING`; `LEGACY` no se acepta por la API | Mismo criterio de IDOR de las decisiones 25 y 28; el historial sin detalle solo entra por la importación |
+| 33 | Aprobar, rechazar y anular | Aprobar y rechazar: A y T (`IsTreasurerOrAdmin`; la junta sin tesorería **no**). Anular: solo A. `reject` y `void` exigen `reason` (máx. 255). **No** se prohíbe aprobar un pago que uno mismo registró | Con un solo administrador, exigir otra persona bloquearía el registro a nombre del vecino; la auditoría guarda quién registró y quién aprobó |
+| 34 | Número de operación | Completo para A, J, T y quien registró el pago; para el resto, `****` más los 4 últimos. La auditoría guarda solo los 4 últimos | Evita que un copropietario o inquilino copie datos de un pago ajeno |
+| 35 | Subida de comprobantes | `POST /payments/{id}/voucher/` (multipart, campo `file`) solo si el pago está `PENDING`; lo sube quien lo registró, A o T (la junta y otros residentes de la unidad: 403). Máximo 3 por pago y 5 MB; el tipo se decide por la firma del contenido. Límite por usuario con `VOUCHER_UPLOAD_RATE` (por defecto `20/hour`), respuesta 429 `throttled` con `Retry-After` | Un comprobante no se cambia después de revisado; el límite frena el abuso del disco |
+| 36 | Descarga de comprobantes | `GET /payments/{id}/voucher/`: A, T y los residentes de la unidad (la junta ve el pago pero recibe 403). `FileResponse` solo tras verificar permisos; `Content-Type` tomado de la BD y validado contra una lista (si no coincide, `application/octet-stream`), `X-Content-Type-Options: nosniff`, `Cache-Control: private` y nombre genérico `comprobante-<n>.<ext>` (`n` = orden de subida). `?voucher=<id>` elige uno; por defecto, el más reciente. Nunca una URL pública | El nombre guardado es aleatorio y no se revela; un tipo alterado no se interpreta como HTML |
+| 37 | Duplicados y advertencias | Mismo medio, operación y monto en la torre: 409 `duplicate_payment` (el id del otro pago solo lo ve A, J o T). Mismo medio y operación con otro monto: 201 con `warnings` `same_operation_number`. Mismo archivo en otro pago de la torre: 201 con `warnings` `duplicate_voucher`. Los `payment_ids` de las advertencias solo se muestran a A, J y T | Avisar sin bloquear, y sin revelar a un residente pagos de otras unidades |
+| 38 | Errores de la API de pagos | 400 `validation_error`, `invalid_payment`, `invalid_voucher`; 404 `voucher_not_found`, `voucher_file_missing`; 409 `duplicate_payment`, `payment_not_pending`, `payment_not_approved`, `voucher_limit`; 429 `throttled`. Un 403 de permisos usa el formato por defecto de DRF | Un conflicto de estado no es un error de formato (decisión 31) |
+| 39 | Saldo a favor en la API | `GET /units/{id}/statement/` añade `credit_balance` (texto con 2 decimales) al resumen. El saldo sigue derivado (decisión 8). `apply_credit` existe como servicio, pero **no** se expone por la API todavía | Mantener la superficie mínima hasta que haya una necesidad |
 ---
 
 ## 2. Hallazgos del Excel de muestra y su impacto en el diseño
@@ -280,14 +288,15 @@ Servicios `compute_late_fee()` y `compute_early_discount()` existen detrás de `
 | POST | `/charges/{id}/void/` | Anular cargo | A |
 | GET | `/units/{id}/statement/` | Estado de cuenta (JSON) | A, J · P, I (propio) |
 | GET | `/units/{id}/statement/pdf/` | Estado de cuenta (PDF) | A, J · P, I (propio) |
-| GET | `/payments/` | Pagos con filtros | A, T, J · P, I (propio) |
+| GET | `/payments/` | Pagos con filtros `unit`, `status`, `method`, `paid_from`, `paid_to` | A, T, J · P, I (propio) |
+| GET | `/payments/{id}/` | Detalle del pago | A, T, J · P, I (propio) |
 | POST | `/payments/` | Registrar pago (residente) o a nombre de otro (A, T) | A, T, P, I |
 | POST | `/payments/{id}/voucher/` | Subir imagen de comprobante | quien registró · A, T |
-| GET | `/payments/{id}/voucher/` | Descargar comprobante | A, T · P, I (propio) |
+| GET | `/payments/{id}/voucher/` | Descargar comprobante (`?voucher=<id>`; por defecto el más reciente) | A, T · P, I (propio) |
 | POST | `/payments/{id}/approve/` | Aprobar y aplicar | A, T |
 | POST | `/payments/{id}/reject/` | Rechazar con motivo | A, T |
 | POST | `/payments/{id}/void/` | Anular pago aprobado | A |
-| GET | `/payments/{id}/receipt/pdf/` | Recibo PDF | A, T · P, I (propio) |
+| GET | `/payments/{id}/receipt/pdf/` | Recibo PDF (S5) | A, T · P, I (propio) |
 | GET | `/expenses/` · `/expenses/{id}/` | Gastos con detalle (proveedor, monto) | A, J, P |
 | POST/PATCH | `/expenses/` · `/expenses/{id}/` | Registrar y editar gastos | A, T |
 | GET | `/expenses/{id}/document/` | Descargar comprobante del gasto, si existe | A, J, P |
@@ -518,3 +527,39 @@ Auditoría: `FEE_RATE_CREATED`, `CHARGES_GENERATED`, `CHARGE_CREATED` y `CHARGE_
 - Esquema OpenAPI (`drf-spectacular`) y `django-filter`: S3 valida los filtros con serializers y parámetros de la URL.
 - `GET /users/`, `PATCH /users/{id}/` y `resend-invitation`.
 - La carrera entre dos altas simultáneas de personas con el mismo documento (500 en lugar de 400).
+
+## 15. Entregables del sprint S4 ✅ (completado)
+
+App `finances` (pagos), en dos partes con ciclo RED → GREEN cada una:
+
+| Parte | Contenido |
+|-------|-----------|
+| S4-A | Modelos `Payment`, `PaymentVoucher` y `PaymentAllocation` (migración `0002_payments`) con restricciones en la base de datos; almacenamiento privado de comprobantes (`VOUCHER_ROOT`). Servicios `submit_payment`, `attach_voucher`, `approve_payment`, `reject_payment`, `void_payment`, `credit_balance`, `units_with_credit` y `apply_credit`; el estado de cuenta calcula el saldo a favor |
+| S4-B | API de pagos y comprobantes (decisiones 32 a 39), `IsTreasurerOrAdmin`, `VoucherUploadThrottle` y `credit_balance` en el resumen del estado de cuenta. Servicio `payments_with_same_operation` |
+
+| Método | Ruta | Roles |
+|--------|------|-------|
+| GET / POST | `/payments/` | A, J, T (todos) y P, I (solo lo propio) · registrar: A, T (cualquier unidad), P, I (su unidad) |
+| GET | `/payments/{id}/` | A, J, T · P, I (propio) |
+| POST | `/payments/{id}/voucher/` | quien registró el pago · A, T |
+| GET | `/payments/{id}/voucher/` | A, T · P, I (propio) |
+| POST | `/payments/{id}/approve/` y `/reject/` | A, T |
+| POST | `/payments/{id}/void/` | A |
+
+Auditoría (con la IP del cliente): `PAYMENT_SUBMITTED`, `VOUCHER_ATTACHED`, `PAYMENT_APPROVED`, `PAYMENT_REJECTED`, `PAYMENT_VOIDED` y `CREDIT_APPLIED` (solo servicio). Nunca se guarda el número de operación completo ni el contenido de los archivos. Las pruebas incluyen la matriz rol × endpoint (8 roles), el aislamiento entre unidades (404), la subida con firma falsa, con más de 5 MB y con un cuarto archivo, las cabeceras de la descarga, el límite de subidas y los flujos completos (registrar, subir, aprobar, rechazar, anular y ver el estado de cuenta).
+
+**Resultado:** 992 pruebas en total (565 previas; S4-A, 170; S4-B, 257). Cobertura de `finances`: 99 %. Con SQLite corren 989 y se saltan 3 (las de hilos, que exigen PostgreSQL).
+
+**Cambio en una prueba existente:** `test_el_estado_de_cuenta_trae_unidad_resumen_y_lineas` (S3-B) compara el resumen completo; ahora incluye `"credit_balance": "0.00"`.
+
+**Fuera de S4 (sigue previsto):**
+- `Receipt` y cualquier PDF, incluido `GET /payments/{id}/receipt/pdf/` (S5).
+- Importación CSV, gastos, convenios y correo.
+
+**Pendiente:**
+- Ejecutar las 3 pruebas con hilos y las restricciones de la base de datos contra PostgreSQL 16 en el CI.
+- El límite de subidas usa la caché por defecto de Django (memoria local de cada proceso): con 2 procesos de Gunicorn el límite efectivo puede llegar al doble. Valorar una caché compartida (base de datos) en la Fase 5.
+- Docker no está verificado: el `Dockerfile` fija `VOUCHER_ROOT=/data/vouchers`, el `docker-compose.yml` debe montar ahí un volumen nombrado y `backend/var/` debe ir en `.gitignore`. Nginx necesita `client_max_body_size` ≥ 6 MB (Fase 5).
+- Sin antivirus sobre los comprobantes.
+- Esquema OpenAPI (`drf-spectacular`) de los endpoints de pagos.
+- Decidir si se expone `apply_credit` (hoy, tras anular un pago pueden coexistir deuda y saldo a favor).

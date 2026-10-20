@@ -247,3 +247,50 @@ def voucher_file():
         return cuerpo
 
     return _make
+
+
+# --- API de pagos (S4-B) -----------------------------------------------------
+
+
+@pytest.fixture
+def usuario():
+    """Devuelve el usuario de `actores` por su nombre (`propietario`, `vecino`...)."""
+
+    def _usuario(nombre):
+        return User.objects.get(email=f"{nombre.replace('_', '-')}@valleblanco.pe")
+
+    return _usuario
+
+
+@pytest.fixture
+def datos_pago():
+    """Cuerpo JSON válido para `POST /payments/`."""
+
+    def _datos(unidad, **extra):
+        datos = {
+            "unit": str(unidad.pk),
+            "amount": "80.00",
+            "method": "YAPE",
+            "operation_number": "OP-0001",
+            "paid_at": "2025-03-01",
+        }
+        datos.update(extra)
+        return datos
+
+    return _datos
+
+
+@pytest.fixture
+def subir():
+    """Sube un comprobante por la API (multipart, campo `file`)."""
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    def _subir(client, pago, contenido, nombre="comprobante.jpg", tipo="image/jpeg"):
+        archivo = SimpleUploadedFile(nombre, contenido, content_type=tipo)
+        return client.post(
+            f"/api/v1/payments/{pago.pk}/voucher/",
+            {"file": archivo},
+            format="multipart",
+        )
+
+    return _subir

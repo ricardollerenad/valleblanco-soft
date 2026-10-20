@@ -778,6 +778,27 @@ def submit_payment(
     return payment
 
 
+def payments_with_same_operation(payment):
+    """Ids de otros pagos vigentes de la torre con el mismo medio y operación.
+
+    Son pagos pendientes o aprobados con otro monto (con el mismo monto habría sido
+    un duplicado y se habría rechazado al registrar).
+    """
+    if not payment.operation_number:
+        return []
+    return list(
+        Payment.objects.filter(
+            unit__tower_id=payment.unit.tower_id,
+            method=payment.method,
+            operation_number=payment.operation_number,
+            status__in=(Payment.Status.PENDING, Payment.Status.APPROVED),
+        )
+        .exclude(pk=payment.pk)
+        .order_by("created_at", "id")
+        .values_list("pk", flat=True)
+    )
+
+
 # --- Comprobantes ------------------------------------------------------------
 
 

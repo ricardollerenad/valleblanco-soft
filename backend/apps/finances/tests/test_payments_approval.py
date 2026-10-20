@@ -1,10 +1,11 @@
 """approve_payment y allocated_totals: aplicación al cargo más antiguo primero."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 
 from apps.core.models import AuditLog
 from apps.finances import models, services
@@ -131,17 +132,27 @@ def test_con_igual_vencimiento_gana_el_periodo_mas_antiguo(
     assert services.pending_amount(febrero) == D("80.00")
 
 
+@pytest.mark.parametrize("mas_antiguo", ["EXTRAORDINARY_FEE", "ADJUSTMENT"])
 def test_con_igual_vencimiento_y_periodo_gana_el_creado_primero(
-    unit, make_charge, make_payment
+    unit, make_charge, make_payment, mas_antiguo
 ):
     vence = date(2025, 4, 30)
-    primero = make_charge(
-        unit, date(2025, 3, 1), concept="EXTRAORDINARY_FEE", due_date=vence
-    )
-    segundo = make_charge(unit, date(2025, 3, 1), concept="ADJUSTMENT", due_date=vence)
+    cargos = {
+        concepto: make_charge(unit, date(2025, 3, 1), concept=concepto, due_date=vence)
+        for concepto in ("EXTRAORDINARY_FEE", "ADJUSTMENT")
+    }
+    # `created_at` lo pone auto_now_add y en Windows dos altas seguidas pueden
+    # empatar (reloj de ~15 ms): se fija a mano para no depender del reloj.
+    ahora = timezone.now()
+    for concepto, cargo in cargos.items():
+        creado = ahora - timedelta(seconds=1) if concepto == mas_antiguo else ahora
+        models.Charge.objects.filter(pk=cargo.pk).update(created_at=creado)
+
     services.approve_payment(make_payment(unit, "80.00"))
-    assert services.pending_amount(primero) == D("0.00")
-    assert services.pending_amount(segundo) == D("80.00")
+
+    otro = "ADJUSTMENT" if mas_antiguo == "EXTRAORDINARY_FEE" else "EXTRAORDINARY_FEE"
+    assert services.pending_amount(cargos[mas_antiguo]) == D("0.00")
+    assert services.pending_amount(cargos[otro]) == D("80.00")
 
 
 def test_ignora_cargos_anulados_y_refinanciados(unit, make_charge, make_payment):

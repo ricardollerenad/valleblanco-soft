@@ -1,6 +1,6 @@
 # ROADMAP: ValleBlanco-Soft (MVP Sistema de Administración de Condominios)
 
-> **Versión:** 1.7 (Fase 1 cerrada; S0, S1, S2 y S3 completados; siguiente: S4)
+> **Versión:** 1.8 (Fase 1 cerrada; S0 a S4 completados; siguiente: S5)
 > **Dominio de producción:** `torre2.arequipa.site`
 > **Marcas:** ✅ confirmado · 🟡 supuesto propuesto (validar) · ⏳ pendiente de respuesta
 
@@ -148,15 +148,15 @@ Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** 
 | S1 ✅ | `accounts`: usuario por correo, invitación, aceptar invitación, login/logout, permisos básicos | R1 |
 | S2 ✅ | `properties`: condominio/torre/unidades, relación persona ↔ unidad, roles por torre (`RoleAssignment`) | R1 |
 | S3 ✅ | `finances` I: cargos mensuales, libro de movimientos, saldo | R1 |
-| S4 ⏭ | `finances` II: pagos con comprobante, aprobación, aplicación, saldo a favor | R1 |
-| S5 | Recibo PDF, estado de cuenta, importación CSV | R1 |
+| S4 ✅ | `finances` II: pagos con comprobante, aprobación, aplicación, saldo a favor | R1 |
+| S5 ⏭ | Recibo PDF, estado de cuenta, importación CSV | R1 |
 | S6 | Frontend base: design system, login, dashboards admin/residente, flujo de pago | R1 |
 | S7 | Gastos y resumen ingresos/egresos; comunicados; correo | R2 |
 | S8 | Convenios de pago | R2 |
 | S9 | Reservas del SUM | R3 |
 | S10 | Votaciones | R3 |
 
-**Estado:** S0 a S3 cerrados (565 pruebas, cobertura 99 %): `core`, `accounts` con invitación, login, límite de intentos, permisos y auditoría, `properties` con unidades, personas, ocupaciones, roles por torre y carga de la Torre 2, y `finances` con tarifas, cuotas mensuales idempotentes, cargos manuales y anulación, estado de cuenta en JSON y reporte de morosidad. Siguiente: S4 (`finances` II).
+**Estado:** S0 a S4 cerrados (992 pruebas, cobertura 99 %): `core`, `accounts` con invitación, login, límite de intentos, permisos y auditoría, `properties` con unidades, personas, ocupaciones, roles por torre y carga de la Torre 2, y `finances` con tarifas, cuotas mensuales idempotentes, cargos manuales y anulación, estado de cuenta en JSON con saldo a favor, reporte de morosidad, y pagos con comprobante privado, aprobación, rechazo y anulación por API. Siguiente: S5 (recibo PDF, estado de cuenta en PDF e importación CSV). Pendiente de S4: confirmar con PostgreSQL en el CI las pruebas con hilos, y documentar en la Fase 5 el volumen de comprobantes, `client_max_body_size` y el límite de subidas.
 **Definición de "Hecho":** tests en verde, cobertura ≥ 80 % del módulo, lint y type-check limpios, OpenAPI actualizado, permisos por rol probados.
 
 ### Fase 4: Pruebas, Seguridad y Accesibilidad

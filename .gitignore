@@ -34,3 +34,6 @@ Thumbs.db
 *.diff
 
 *.patch
+backend/var/
+
+_pruebas/

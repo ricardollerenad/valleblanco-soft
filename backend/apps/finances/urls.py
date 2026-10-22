@@ -20,6 +20,32 @@ urlpatterns = [
         views.UnitStatementView.as_view(),
         name="unit-statement",
     ),
+    path("payments/", views.PaymentListCreateView.as_view(), name="payment-list"),
+    path(
+        "payments/<uuid:pk>/",
+        views.PaymentDetailView.as_view(),
+        name="payment-detail",
+    ),
+    path(
+        "payments/<uuid:pk>/voucher/",
+        views.PaymentVoucherView.as_view(),
+        name="payment-voucher",
+    ),
+    path(
+        "payments/<uuid:pk>/approve/",
+        views.PaymentApproveView.as_view(),
+        name="payment-approve",
+    ),
+    path(
+        "payments/<uuid:pk>/reject/",
+        views.PaymentRejectView.as_view(),
+        name="payment-reject",
+    ),
+    path(
+        "payments/<uuid:pk>/void/",
+        views.PaymentVoidView.as_view(),
+        name="payment-void",
+    ),
     path(
         "reports/delinquency/",
         views.DelinquencyReportView.as_view(),

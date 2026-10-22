@@ -88,6 +88,12 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 
+# Comprobantes de pago: directorio PRIVADO, nunca servido por una URL pública.
+# En Docker es un volumen nombrado (Dockerfile: /data/vouchers).
+VOUCHER_ROOT = Path(os.environ.get("VOUCHER_ROOT") or BASE_DIR / "var" / "vouchers")
+# Subidas de comprobantes por usuario (formato de DRF: `20/hour`).
+VOUCHER_UPLOAD_RATE = os.environ.get("VOUCHER_UPLOAD_RATE") or "20/hour"
+
 X_FRAME_OPTIONS = "DENY"
 
 REST_FRAMEWORK = {

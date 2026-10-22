@@ -39,6 +39,7 @@ def test_el_estado_de_cuenta_trae_unidad_resumen_y_lineas(actores, unit, tres_me
         "months_of_debt": 2,
         "delinquency_threshold": 4,
         "is_delinquent": False,
+        "credit_balance": "0.00",
     }
     assert [c["period"] for c in data["charges"]] == [
         "2025-01-01",

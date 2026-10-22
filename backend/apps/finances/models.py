@@ -1,10 +1,13 @@
-"""Configuración financiera, tarifas y cargos. Los cargos se anulan, no se borran."""
+"""Configuración financiera, tarifas, cargos y pagos. Todo se anula, no se borra."""
 
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
 
 from apps.core.models import BaseModel
+
+from .storage import voucher_storage
 
 MONEY = {"max_digits": 12, "decimal_places": 2}
 
@@ -163,3 +166,144 @@ class Charge(BaseModel):
 
     def __str__(self):
         return f"{self.unit} {self.concept} {self.period:%Y-%m} {self.amount}"
+
+
+MAX_VOUCHER_SIZE = 5 * 1024 * 1024
+
+
+class Payment(BaseModel):
+    """Lo que una unidad pagó. Se aprueba, rechaza o anula; nunca se borra."""
+
+    class Method(models.TextChoices):
+        TRANSFER = "TRANSFER", "Transferencia"
+        DEPOSIT = "DEPOSIT", "Depósito"
+        YAPE = "YAPE", "Yape"
+        PLIN = "PLIN", "Plin"
+        LEGACY = "LEGACY", "Historial sin detalle"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pendiente"
+        APPROVED = "APPROVED", "Aprobado"
+        REJECTED = "REJECTED", "Rechazado"
+        VOID = "VOID", "Anulado"
+
+    class Source(models.TextChoices):
+        RESIDENT = "RESIDENT", "Residente"
+        STAFF = "STAFF", "Administración"
+        IMPORT = "IMPORT", "Importación"
+
+    unit = models.ForeignKey(
+        "properties.Unit", on_delete=models.PROTECT, related_name="payments"
+    )
+    amount = models.DecimalField("monto", **MONEY)
+    method = models.CharField("medio de pago", max_length=10, choices=Method.choices)
+    operation_number = models.CharField(
+        "número de operación (normalizado)", max_length=50, blank=True
+    )
+    paid_at = models.DateField("fecha del pago")
+    status = models.CharField(
+        "estado", max_length=10, choices=Status.choices, default=Status.PENDING
+    )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    reviewed_at = models.DateTimeField("revisado el", null=True, blank=True)
+    rejection_reason = models.CharField(
+        "motivo del rechazo", max_length=255, blank=True
+    )
+    source = models.CharField("origen", max_length=10, choices=Source.choices)
+
+    class Meta:
+        ordering = ("-paid_at", "-created_at")
+        verbose_name = "pago"
+        verbose_name_plural = "pagos"
+        indexes = (
+            models.Index(fields=("unit", "status")),
+            models.Index(fields=("method", "operation_number")),
+        )
+        constraints = (
+            models.CheckConstraint(
+                condition=Q(amount__gt=0), name="payment_amount_positive"
+            ),
+            models.CheckConstraint(
+                condition=Q(method="LEGACY") | ~Q(operation_number=""),
+                name="payment_operation_number_required",
+            ),
+            models.CheckConstraint(
+                condition=~Q(status="REJECTED") | ~Q(rejection_reason=""),
+                name="payment_rejected_needs_reason",
+            ),
+            models.CheckConstraint(
+                condition=~Q(status="APPROVED") | Q(reviewed_at__isnull=False),
+                name="payment_approved_needs_review_date",
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.unit} {self.method} {self.amount} ({self.status})"
+
+
+class PaymentVoucher(BaseModel):
+    """Imagen o PDF del comprobante. Se guarda en un directorio privado."""
+
+    payment = models.ForeignKey(
+        Payment, on_delete=models.PROTECT, related_name="vouchers"
+    )
+    file = models.FileField(
+        "archivo", upload_to="%Y/%m", storage=voucher_storage, max_length=255
+    )
+    sha256 = models.CharField(max_length=64, db_index=True)
+    content_type = models.CharField(max_length=50)
+    size = models.PositiveIntegerField("tamaño en bytes")
+
+    class Meta:
+        ordering = ("created_at",)
+        verbose_name = "comprobante"
+        verbose_name_plural = "comprobantes"
+        constraints = (
+            models.CheckConstraint(
+                condition=Q(size__gt=0) & Q(size__lte=MAX_VOUCHER_SIZE),
+                name="voucher_size_between_1_and_5mb",
+            ),
+        )
+
+    def __str__(self):
+        return f"Comprobante de {self.payment_id} ({self.content_type})"
+
+
+class PaymentAllocation(BaseModel):
+    """Cuánto de un pago cubre un cargo. Solo cuentan las de pagos aprobados."""
+
+    payment = models.ForeignKey(
+        Payment, on_delete=models.PROTECT, related_name="allocations"
+    )
+    charge = models.ForeignKey(
+        Charge, on_delete=models.PROTECT, related_name="allocations"
+    )
+    amount = models.DecimalField("monto aplicado", **MONEY)
+
+    class Meta:
+        verbose_name = "aplicación de pago"
+        verbose_name_plural = "aplicaciones de pago"
+        constraints = (
+            models.CheckConstraint(
+                condition=Q(amount__gt=0), name="allocation_amount_positive"
+            ),
+            models.UniqueConstraint(
+                fields=("payment", "charge"), name="uniq_allocation_per_payment_charge"
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.payment_id} -> {self.charge_id}: {self.amount}"

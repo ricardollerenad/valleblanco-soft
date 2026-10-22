@@ -1,24 +1,50 @@
-"""Reglas de cobranza: tarifas, generación de cargos, anulación, saldos y morosidad.
+"""Reglas de cobranza: tarifas, cargos, pagos con comprobante, saldos y morosidad.
 
 Dependencias: `finances` conoce a `properties`, nunca al revés. El saldo de un cargo
-es `monto - asignaciones`; hasta que existan los pagos (S4) las asignaciones valen 0
-y `allocated_totals` es el único punto que habrá que reemplazar.
+es `monto - asignaciones de pagos aprobados` y el saldo a favor de una unidad es lo
+aprobado menos lo asignado: ambos se derivan, nunca se guardan.
+
+Orden de bloqueo (evita interbloqueos): unidad, luego pago, luego cargos. Solo el
+registro de pagos bloquea la torre (para detectar duplicados sin carreras).
 """
 
 import calendar
+import hashlib
+import unicodedata
+import uuid
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import NamedTuple
 
+from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import (
+    DecimalField,
+    ExpressionWrapper,
+    F,
+    OuterRef,
+    Q,
+    Subquery,
+    Sum,
+    Value,
+)
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.core.audit import log_event
 from apps.properties.models import Tower, Unit
 
-from .models import Charge, Concept, FeeRate, FinanceSettings
+from .models import (
+    MAX_VOUCHER_SIZE,
+    Charge,
+    Concept,
+    FeeRate,
+    FinanceSettings,
+    Payment,
+    PaymentAllocation,
+    PaymentVoucher,
+)
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
@@ -29,6 +55,26 @@ MANUAL_CONCEPTS = frozenset(
 # Conceptos con tarifa propia: por ahora solo la cuota ordinaria.
 FEE_RATE_CONCEPTS = frozenset({Concept.ORDINARY_FEE})
 ONE_DAY = timedelta(days=1)
+MONEY_FIELD = DecimalField(max_digits=12, decimal_places=2)
+# Orden de aplicación de pagos y de saldo a favor: el cargo más antiguo primero.
+CHARGE_ORDER = ("due_date", "period", "created_at", "id")
+PAYMENT_METHODS = frozenset(
+    {
+        Payment.Method.TRANSFER,
+        Payment.Method.DEPOSIT,
+        Payment.Method.YAPE,
+        Payment.Method.PLIN,
+    }
+)
+MAX_VOUCHERS_PER_PAYMENT = 3
+MAX_OPERATION_NUMBER_LENGTH = 50
+MAX_REASON_LENGTH = 255
+# Tipo real del archivo, por su firma: (tipo MIME, extensión).
+VOUCHER_SIGNATURES = (
+    (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
+    (b"%PDF-", "application/pdf", ".pdf"),
+)
 
 
 class FinancesError(Exception):
@@ -63,6 +109,34 @@ class ChargeHasAllocationsError(FinancesError):
     """El cargo ya tiene pagos aplicados y no se puede anular."""
 
 
+class InvalidPaymentError(FinancesError):
+    """Los datos del pago o del motivo no cumplen las reglas."""
+
+
+class DuplicatePaymentError(FinancesError):
+    """Ya hay un pago pendiente o aprobado con el mismo medio, operación y monto."""
+
+    def __init__(self, message, existing_payment_id=None):
+        super().__init__(message)
+        self.existing_payment_id = existing_payment_id
+
+
+class PaymentNotPendingError(FinancesError):
+    """La acción solo aplica a pagos pendientes."""
+
+
+class PaymentNotApprovedError(FinancesError):
+    """Solo se anulan pagos aprobados (uno pendiente se rechaza)."""
+
+
+class InvalidVoucherError(FinancesError):
+    """El archivo no es un comprobante válido (tipo real, vacío o demasiado grande)."""
+
+
+class VoucherLimitError(FinancesError):
+    """El pago ya tiene el máximo de comprobantes."""
+
+
 class GenerationResult(NamedTuple):
     period: date
     created: int
@@ -92,6 +166,20 @@ class Statement(NamedTuple):
     months_of_debt: int
     threshold: int
     is_delinquent: bool
+    credit_balance: Decimal
+
+
+class PaymentApproval(NamedTuple):
+    payment: Payment
+    allocations: list
+    charges_covered: int
+    surplus: Decimal
+
+
+class VoucherAttachment(NamedTuple):
+    voucher: PaymentVoucher
+    # Otros pagos de la misma torre con el mismo archivo: es un aviso, no un bloqueo.
+    duplicate_payment_ids: tuple
 
 
 # --- Fechas y dinero ---------------------------------------------------------
@@ -107,20 +195,20 @@ def last_day_of_month(value):
     return value.replace(day=calendar.monthrange(value.year, value.month)[1])
 
 
-def to_money(value):
+def to_money(value, error=InvalidChargeError):
     """Convierte a Decimal positivo de 2 decimales; rechaza float y valores raros."""
     if value is None or isinstance(value, (bool, float)):
-        raise InvalidChargeError("El monto debe ser un número decimal positivo.")
+        raise error("El monto debe ser un número decimal positivo.")
     try:
         amount = Decimal(str(value).strip())
     except InvalidOperation:
-        raise InvalidChargeError("El monto no es un número válido.") from None
+        raise error("El monto no es un número válido.") from None
     if not amount.is_finite():
-        raise InvalidChargeError("El monto no es un número válido.")
+        raise error("El monto no es un número válido.")
     if amount != amount.quantize(CENT):
-        raise InvalidChargeError("El monto admite como máximo 2 decimales.")
+        raise error("El monto admite como máximo 2 decimales.")
     if amount <= 0:
-        raise InvalidChargeError("El monto debe ser mayor que cero.")
+        raise error("El monto debe ser mayor que cero.")
     return amount.quantize(CENT)
 
 
@@ -287,6 +375,7 @@ def _generate_for_tower(period, tower, actor, actor_label, ip):
     before = scope.count()
     Charge.objects.bulk_create(new_charges, ignore_conflicts=True)
     created = scope.count() - before
+    _apply_credit_to_new_charges(new_charges, actor, actor_label, ip)
 
     log_event(
         "CHARGES_GENERATED",
@@ -304,6 +393,27 @@ def _generate_for_tower(period, tower, actor, actor_label, ip):
         ip=ip,
     )
     return created, len(existing_ids), skipped
+
+
+def _apply_credit_to_new_charges(new_charges, actor, actor_label, ip):
+    """Aplica el saldo a favor solo a las cuotas recién creadas.
+
+    Una sola consulta dice qué unidades tienen saldo; las demás no cuestan nada más.
+    """
+    if not new_charges:
+        return
+    with_credit = units_with_credit([charge.unit_id for charge in new_charges])
+    if not with_credit:
+        return
+    for charge in sorted(new_charges, key=lambda item: item.unit.code):
+        if charge.unit_id in with_credit:
+            apply_credit(
+                charge.unit,
+                [charge.pk],
+                actor=actor,
+                actor_label=actor_label,
+                ip=ip,
+            )
 
 
 # --- Cargos manuales y anulación --------------------------------------------
@@ -363,6 +473,8 @@ def create_manual_charge(
                 },
                 ip=ip,
             )
+            if units_with_credit([unit.pk]):
+                apply_credit(unit, [charge.pk], actor=actor, ip=ip)
     except IntegrityError:
         raise ChargeAlreadyExistsError(
             "Esa unidad ya tiene la cuota de ese periodo."
@@ -412,9 +524,21 @@ def void_charge(charge, reason, *, actor=None, ip=None):
 def allocated_totals(charge_ids):
     """Monto aplicado por cargo: `{charge_id: Decimal}`.
 
-    S4 lo reemplaza por la suma de `PaymentAllocation` de pagos aprobados.
+    Suma solo las asignaciones de pagos aprobados: al anular un pago dejan de contar
+    (sin borrarse) y el cargo vuelve a quedar pendiente.
     """
-    return {}
+    charge_ids = list(charge_ids)
+    if not charge_ids:
+        return {}
+    rows = (
+        PaymentAllocation.objects.filter(
+            charge_id__in=charge_ids, payment__status=Payment.Status.APPROVED
+        )
+        .order_by()
+        .values("charge_id")
+        .annotate(total=Sum("amount"))
+    )
+    return {row["charge_id"]: row["total"] for row in rows}
 
 
 def _pending_by_charge(charges):
@@ -525,4 +649,514 @@ def unit_statement(unit, as_of=None):
         months_of_debt=len(overdue),
         threshold=threshold,
         is_delinquent=len(overdue) >= threshold,
+        credit_balance=credit_balance(unit),
     )
+
+
+# --- Pagos -------------------------------------------------------------------
+
+
+def normalize_operation_number(value):
+    """Solo letras y dígitos, en mayúsculas: ` op-00 12 ` y `OP0012` son lo mismo."""
+    text = unicodedata.normalize("NFKC", "" if value is None else str(value))
+    return "".join(char for char in text if char.isalnum()).upper()
+
+
+def _clean_reason(reason, message):
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if not reason:
+        raise InvalidPaymentError(message)
+    return reason[:MAX_REASON_LENGTH]
+
+
+def _lock_unit(unit_id):
+    """Primer bloqueo de toda operación que mueve saldos de la unidad."""
+    return Unit.objects.select_for_update().get(pk=unit_id)
+
+
+def _unit_code(unit_id):
+    return Unit.objects.filter(pk=unit_id).values_list("code", flat=True).get()
+
+
+def _sync(payment, locked):
+    """Deja el objeto que recibió el servicio con el estado ya guardado."""
+    for name in (
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "rejection_reason",
+        "updated_at",
+    ):
+        setattr(payment, name, getattr(locked, name))
+
+
+def submit_payment(
+    unit,
+    amount,
+    method,
+    operation_number,
+    paid_at,
+    *,
+    source=Payment.Source.RESIDENT,
+    submitted_by=None,
+    actor=None,
+    ip=None,
+):
+    """Registra un pago PENDIENTE. Un duplicado pendiente o aprobado se rechaza.
+
+    El duplicado se busca por medio + número de operación normalizado + monto en toda
+    la torre; se bloquea la fila de la torre para que dos registros simultáneos no
+    se crucen. Quién puede registrar para cada unidad lo decide la capa de API.
+    """
+    amount = to_money(amount, InvalidPaymentError)
+    if source not in Payment.Source.values:
+        raise InvalidPaymentError("El origen del pago no es válido.")
+    if method == Payment.Method.LEGACY:
+        if source != Payment.Source.IMPORT:
+            raise InvalidPaymentError("El medio LEGACY es solo para la importación.")
+    elif method not in PAYMENT_METHODS:
+        raise InvalidPaymentError("El medio de pago no es válido.")
+    if not isinstance(paid_at, date) or isinstance(paid_at, datetime):
+        raise InvalidPaymentError("La fecha del pago debe ser una fecha.")
+    if paid_at > timezone.localdate():
+        raise InvalidPaymentError("La fecha del pago no puede ser futura.")
+    operation = normalize_operation_number(operation_number)
+    if len(operation) > MAX_OPERATION_NUMBER_LENGTH:
+        raise InvalidPaymentError("El número de operación es demasiado largo.")
+    if not operation and method != Payment.Method.LEGACY:
+        raise InvalidPaymentError("Indica el número de operación.")
+    if not unit.is_active:
+        raise InvalidPaymentError(
+            "No se puede registrar un pago de una unidad inactiva."
+        )
+
+    with transaction.atomic():
+        Tower.objects.select_for_update().get(pk=unit.tower_id)
+        if operation:
+            existing = (
+                Payment.objects.filter(
+                    unit__tower_id=unit.tower_id,
+                    method=method,
+                    operation_number=operation,
+                    amount=amount,
+                    status__in=(Payment.Status.PENDING, Payment.Status.APPROVED),
+                )
+                .values_list("pk", flat=True)
+                .first()
+            )
+            if existing is not None:
+                raise DuplicatePaymentError(
+                    "Ya existe un pago pendiente o aprobado con ese medio, "
+                    "número de operación y monto.",
+                    existing_payment_id=existing,
+                )
+        payment = Payment.objects.create(
+            unit=unit,
+            amount=amount,
+            method=method,
+            operation_number=operation,
+            paid_at=paid_at,
+            status=Payment.Status.PENDING,
+            submitted_by=submitted_by or actor,
+            source=source,
+        )
+        log_event(
+            "PAYMENT_SUBMITTED",
+            "Payment",
+            payment.pk,
+            actor=actor,
+            changes={
+                "unit": unit.code,
+                "amount": str(amount),
+                "method": method,
+                "operation_last4": operation[-4:],
+                "paid_at": paid_at.isoformat(),
+                "source": source,
+            },
+            ip=ip,
+        )
+    return payment
+
+
+def payments_with_same_operation(payment):
+    """Ids de otros pagos vigentes de la torre con el mismo medio y operación.
+
+    Son pagos pendientes o aprobados con otro monto (con el mismo monto habría sido
+    un duplicado y se habría rechazado al registrar).
+    """
+    if not payment.operation_number:
+        return []
+    return list(
+        Payment.objects.filter(
+            unit__tower_id=payment.unit.tower_id,
+            method=payment.method,
+            operation_number=payment.operation_number,
+            status__in=(Payment.Status.PENDING, Payment.Status.APPROVED),
+        )
+        .exclude(pk=payment.pk)
+        .order_by("created_at", "id")
+        .values_list("pk", flat=True)
+    )
+
+
+# --- Comprobantes ------------------------------------------------------------
+
+
+def _read_voucher(content):
+    """Lee como máximo 5 MB + 1 byte; así un archivo enorme no llena la memoria."""
+    if isinstance(content, (bytes, bytearray)):
+        data = bytes(content)
+    elif hasattr(content, "read"):
+        if hasattr(content, "seek"):
+            content.seek(0)
+        data = content.read(MAX_VOUCHER_SIZE + 1)
+        if not isinstance(data, (bytes, bytearray)):
+            raise InvalidVoucherError("El archivo no se pudo leer.")
+        data = bytes(data)
+    else:
+        raise InvalidVoucherError("El comprobante debe ser un archivo.")
+    if not data:
+        raise InvalidVoucherError("El archivo está vacío.")
+    if len(data) > MAX_VOUCHER_SIZE:
+        raise InvalidVoucherError("El archivo supera el máximo de 5 MB.")
+    return data
+
+
+def _voucher_type(data):
+    """Tipo REAL por la firma del contenido; el nombre y el tipo del cliente no cuentan."""
+    for signature, mime, extension in VOUCHER_SIGNATURES:
+        if data.startswith(signature):
+            return mime, extension
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    raise InvalidVoucherError("El archivo debe ser una imagen JPG, PNG, WebP o un PDF.")
+
+
+def attach_voucher(payment, content, *, actor=None, ip=None):
+    """Guarda un comprobante de un pago PENDIENTE en el directorio privado.
+
+    `content` son bytes o un archivo (p. ej. `UploadedFile`). Un `sha256` repetido en
+    otro pago de la torre no bloquea: se informa en `duplicate_payment_ids`.
+    """
+    data = _read_voucher(content)
+    content_type, extension = _voucher_type(data)
+    digest = hashlib.sha256(data).hexdigest()
+    saved_name = None
+    storage = PaymentVoucher._meta.get_field("file").storage
+    try:
+        with transaction.atomic():
+            locked = Payment.objects.select_for_update().get(pk=payment.pk)
+            if locked.status != Payment.Status.PENDING:
+                raise PaymentNotPendingError(
+                    "Solo se adjunta un comprobante a un pago pendiente."
+                )
+            if locked.vouchers.count() >= MAX_VOUCHERS_PER_PAYMENT:
+                raise VoucherLimitError(
+                    f"Un pago admite como máximo {MAX_VOUCHERS_PER_PAYMENT} comprobantes."
+                )
+            if locked.vouchers.filter(sha256=digest).exists():
+                raise InvalidVoucherError("Ese archivo ya está adjunto a este pago.")
+            tower_id = (
+                Unit.objects.filter(pk=locked.unit_id)
+                .values_list("tower_id", flat=True)
+                .get()
+            )
+            others = (
+                PaymentVoucher.objects.filter(
+                    sha256=digest, payment__unit__tower_id=tower_id
+                )
+                .exclude(payment=locked)
+                .order_by("created_at")
+                .values_list("payment_id", flat=True)
+            )
+            duplicates = tuple(dict.fromkeys(others))
+
+            voucher = PaymentVoucher(
+                payment=locked,
+                sha256=digest,
+                content_type=content_type,
+                size=len(data),
+            )
+            voucher.file.save(
+                f"{uuid.uuid4().hex}{extension}", ContentFile(data), save=False
+            )
+            saved_name = voucher.file.name
+            voucher.save()
+            log_event(
+                "VOUCHER_ATTACHED",
+                "PaymentVoucher",
+                voucher.pk,
+                actor=actor,
+                changes={
+                    "payment": str(locked.pk),
+                    "content_type": content_type,
+                    "size": len(data),
+                    "sha256": digest,
+                    "vouchers": locked.vouchers.count(),
+                    "duplicates": len(duplicates),
+                },
+                ip=ip,
+            )
+    except Exception:
+        if saved_name:
+            storage.delete(saved_name)
+        raise
+    return VoucherAttachment(voucher, duplicates)
+
+
+# --- Saldo a favor -----------------------------------------------------------
+
+
+def _credit_payments(unit_ids):
+    """Pagos aprobados con resto sin aplicar (`remaining`), en una sola consulta.
+
+    El saldo a favor de una unidad es la suma de esos restos. `remaining >= 0,01`
+    evita falsos positivos por redondeo en SQLite.
+    """
+    allocated = (
+        PaymentAllocation.objects.filter(payment=OuterRef("pk"))
+        .order_by()
+        .values("payment")
+        .annotate(total=Sum("amount"))
+        .values("total")
+    )
+    return (
+        Payment.objects.filter(
+            unit_id__in=list(unit_ids), status=Payment.Status.APPROVED
+        )
+        .annotate(
+            allocated_total=Coalesce(
+                Subquery(allocated, output_field=MONEY_FIELD),
+                Value(ZERO, output_field=MONEY_FIELD),
+            )
+        )
+        .annotate(
+            remaining=ExpressionWrapper(
+                F("amount") - F("allocated_total"), output_field=MONEY_FIELD
+            )
+        )
+        .filter(remaining__gte=CENT)
+    )
+
+
+def credit_balance(unit):
+    """Saldo a favor: pagos aprobados menos sus asignaciones. Nunca negativo."""
+    return sum((p.remaining for p in _credit_payments([unit.pk])), ZERO)
+
+
+def units_with_credit(unit_ids):
+    """Ids de las unidades (entre `unit_ids`) con saldo a favor; una sola consulta."""
+    return set(_credit_payments(unit_ids).order_by().values_list("unit_id", flat=True))
+
+
+def apply_credit(unit, charge_ids=None, *, actor=None, actor_label="", ip=None):
+    """Aplica el saldo a favor a cargos abiertos con pendiente; devuelve lo aplicado.
+
+    Con `charge_ids` solo toca esos cargos (así se aplica a los nuevos); sin ellos,
+    a todos los pendientes de la unidad. Va del cargo más antiguo al más nuevo y
+    consume primero el pago más antiguo con saldo.
+    """
+    with transaction.atomic():
+        locked_unit = _lock_unit(unit.pk)
+        charges = Charge.objects.select_for_update().filter(
+            unit_id=locked_unit.pk, status=Charge.Status.OPEN
+        )
+        if charge_ids is not None:
+            charges = charges.filter(pk__in=list(charge_ids))
+        charges = list(charges.order_by(*CHARGE_ORDER))
+        if not charges:
+            return ZERO
+        sources = [
+            [payment, payment.remaining]
+            for payment in _credit_payments([locked_unit.pk]).order_by(
+                "paid_at", "created_at", "id"
+            )
+        ]
+        if not sources:
+            return ZERO
+
+        pending = _pending_by_charge(charges)
+        existing = {
+            (row.payment_id, row.charge_id): row
+            for row in PaymentAllocation.objects.filter(
+                payment__in=[item[0] for item in sources], charge__in=charges
+            )
+        }
+        created = []
+        applied = ZERO
+        charges_touched = set()
+        payments_used = set()
+        for charge in charges:
+            need = pending[charge.pk]
+            for item in sources:
+                if need <= 0:
+                    break
+                payment, left = item
+                if left <= 0:
+                    continue
+                take = min(need, left)
+                row = existing.get((payment.pk, charge.pk))
+                if row is not None:
+                    row.amount += take
+                    row.save(update_fields=["amount", "updated_at"])
+                else:
+                    created.append(
+                        PaymentAllocation(payment=payment, charge=charge, amount=take)
+                    )
+                item[1] = left - take
+                need -= take
+                applied += take
+                charges_touched.add(charge.pk)
+                payments_used.add(payment.pk)
+        PaymentAllocation.objects.bulk_create(created)
+        if applied > 0:
+            log_event(
+                "CREDIT_APPLIED",
+                "Unit",
+                locked_unit.pk,
+                actor=actor,
+                actor_label=actor_label,
+                changes={
+                    "unit": locked_unit.code,
+                    "applied": str(applied),
+                    "charges": len(charges_touched),
+                    "payments": len(payments_used),
+                },
+                ip=ip,
+            )
+    return applied
+
+
+# --- Aprobación, rechazo y anulación ----------------------------------------
+
+
+def approve_payment(payment, *, actor=None, ip=None):
+    """Aprueba un pago pendiente y lo aplica al cargo más antiguo primero.
+
+    Bloquea la unidad, el pago y los cargos abiertos. Soporta pagos parciales; lo que
+    sobra queda como saldo a favor (derivado, no guardado).
+    """
+    with transaction.atomic():
+        unit = _lock_unit(payment.unit_id)
+        locked = Payment.objects.select_for_update().get(pk=payment.pk)
+        if locked.status != Payment.Status.PENDING:
+            raise PaymentNotPendingError("Solo se aprueban pagos pendientes.")
+        charges = list(
+            Charge.objects.select_for_update()
+            .filter(unit_id=unit.pk, status=Charge.Status.OPEN)
+            .order_by(*CHARGE_ORDER)
+        )
+        pending = _pending_by_charge(charges)
+
+        remaining = locked.amount
+        allocations = []
+        covered = 0
+        for charge in charges:
+            if remaining <= 0:
+                break
+            need = pending[charge.pk]
+            if need <= 0:
+                continue
+            take = min(need, remaining)
+            allocations.append(
+                PaymentAllocation(payment=locked, charge=charge, amount=take)
+            )
+            remaining -= take
+            if take == need:
+                covered += 1
+        PaymentAllocation.objects.bulk_create(allocations)
+
+        locked.status = Payment.Status.APPROVED
+        locked.reviewed_by = actor
+        locked.reviewed_at = timezone.now()
+        locked.save(
+            update_fields=["status", "reviewed_by", "reviewed_at", "updated_at"]
+        )
+        log_event(
+            "PAYMENT_APPROVED",
+            "Payment",
+            locked.pk,
+            actor=actor,
+            changes={
+                "unit": unit.code,
+                "amount": str(locked.amount),
+                "allocations": len(allocations),
+                "charges_covered": covered,
+                "surplus": str(remaining),
+            },
+            ip=ip,
+        )
+    _sync(payment, locked)
+    return PaymentApproval(payment, allocations, covered, remaining)
+
+
+def reject_payment(payment, reason, *, actor=None, ip=None):
+    """Rechaza un pago pendiente con motivo. No aplica nada."""
+    reason = _clean_reason(reason, "Indica el motivo del rechazo.")
+    with transaction.atomic():
+        locked = Payment.objects.select_for_update().get(pk=payment.pk)
+        if locked.status != Payment.Status.PENDING:
+            raise PaymentNotPendingError("Solo se rechazan pagos pendientes.")
+        locked.status = Payment.Status.REJECTED
+        locked.rejection_reason = reason
+        locked.reviewed_by = actor
+        locked.reviewed_at = timezone.now()
+        locked.save(
+            update_fields=[
+                "status",
+                "rejection_reason",
+                "reviewed_by",
+                "reviewed_at",
+                "updated_at",
+            ]
+        )
+        log_event(
+            "PAYMENT_REJECTED",
+            "Payment",
+            locked.pk,
+            actor=actor,
+            changes={
+                "unit": _unit_code(locked.unit_id),
+                "amount": str(locked.amount),
+                "reason": reason,
+            },
+            ip=ip,
+        )
+    _sync(payment, locked)
+    return payment
+
+
+def void_payment(payment, reason, *, actor=None, ip=None):
+    """Anula un pago aprobado. Sus asignaciones se conservan pero dejan de contar.
+
+    Los cargos que cubría vuelven a quedar pendientes y el saldo a favor de la unidad
+    se recalcula solo (todo se deriva de pagos aprobados).
+    """
+    reason = _clean_reason(reason, "Indica el motivo de la anulación.")
+    with transaction.atomic():
+        unit = _lock_unit(payment.unit_id)
+        locked = Payment.objects.select_for_update().get(pk=payment.pk)
+        if locked.status != Payment.Status.APPROVED:
+            raise PaymentNotApprovedError(
+                "Solo se anulan pagos aprobados; un pago pendiente se rechaza."
+            )
+        released = PaymentAllocation.objects.filter(payment=locked).aggregate(
+            total=Sum("amount")
+        )["total"]
+        locked.status = Payment.Status.VOID
+        locked.save(update_fields=["status", "updated_at"])
+        log_event(
+            "PAYMENT_VOIDED",
+            "Payment",
+            locked.pk,
+            actor=actor,
+            changes={
+                "unit": unit.code,
+                "amount": str(locked.amount),
+                "released": str((released or ZERO).quantize(CENT)),
+                "reason": reason,
+            },
+            ip=ip,
+        )
+    _sync(payment, locked)
+    return payment

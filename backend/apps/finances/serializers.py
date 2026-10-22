@@ -6,12 +6,17 @@ from datetime import date
 from rest_framework import serializers
 
 from apps.properties.models import Tower, Unit
+from apps.properties.permissions import STAFF_ROLES
 from apps.properties.serializers import UnitSerializer
 
-from .models import Charge, Concept, FeeRate
-from .services import FEE_RATE_CONCEPTS, MANUAL_CONCEPTS
+from .models import Charge, Concept, FeeRate, Payment, PaymentVoucher
+from .services import FEE_RATE_CONCEPTS, MANUAL_CONCEPTS, ZERO
 
 MONEY = {"max_digits": 12, "decimal_places": 2}
+# Medios que la API acepta: `LEGACY` es solo del historial importado.
+API_PAYMENT_METHODS = [
+    choice for choice in Payment.Method.choices if choice[0] != Payment.Method.LEGACY
+]
 PERIOD_PATTERN = re.compile(r"^(\d{4})-(\d{2})(?:-(\d{2}))?$")
 
 
@@ -73,6 +78,16 @@ class VoidSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=255)
 
 
+class PaymentCreateSerializer(serializers.Serializer):
+    """`unit` se resuelve en la vista: una unidad ajena debe dar 404, no un error."""
+
+    unit = serializers.UUIDField()
+    amount = serializers.CharField()
+    method = serializers.ChoiceField(choices=API_PAYMENT_METHODS)
+    operation_number = serializers.CharField(max_length=100)
+    paid_at = serializers.DateField()
+
+
 # --- Filtros de las listas ---------------------------------------------------
 
 
@@ -86,6 +101,26 @@ class ChargeFilterSerializer(serializers.Serializer):
     period = PeriodField(required=False)
     status = serializers.ChoiceField(choices=Charge.Status.choices, required=False)
     concept = serializers.ChoiceField(choices=Concept.choices, required=False)
+
+
+class PaymentFilterSerializer(serializers.Serializer):
+    unit = serializers.UUIDField(required=False)
+    status = serializers.ChoiceField(choices=Payment.Status.choices, required=False)
+    method = serializers.ChoiceField(choices=Payment.Method.choices, required=False)
+    paid_from = serializers.DateField(required=False)
+    paid_to = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        desde, hasta = attrs.get("paid_from"), attrs.get("paid_to")
+        if desde and hasta and desde > hasta:
+            raise serializers.ValidationError(
+                {"paid_to": ["La fecha final no puede ser anterior a la inicial."]}
+            )
+        return attrs
+
+
+class VoucherQuerySerializer(serializers.Serializer):
+    voucher = serializers.UUIDField(required=False)
 
 
 class AsOfSerializer(serializers.Serializer):
@@ -152,6 +187,7 @@ class StatementSummarySerializer(serializers.Serializer):
     months_of_debt = serializers.IntegerField()
     delinquency_threshold = serializers.IntegerField(source="threshold")
     is_delinquent = serializers.BooleanField()
+    credit_balance = serializers.DecimalField(**MONEY)
 
 
 class StatementSerializer(serializers.Serializer):
@@ -168,3 +204,73 @@ class DelinquentUnitSerializer(serializers.Serializer):
     tower_name = serializers.CharField(source="unit.tower.name")
     months = serializers.IntegerField()
     overdue_amount = serializers.DecimalField(**MONEY)
+
+
+class PaymentVoucherSerializer(serializers.ModelSerializer):
+    """Nunca expone la ruta del archivo: se descarga solo por la API autorizada."""
+
+    class Meta:
+        model = PaymentVoucher
+        fields = ("id", "content_type", "size", "created_at")
+        read_only_fields = fields
+
+
+def money_text(value):
+    return f"{value:.2f}"
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    """Pago con sus comprobantes.
+
+    Usa los `vouchers` y `allocations` ya precargados por la vista. El contexto trae
+    `request` y `roles` (los roles del usuario, calculados una sola vez).
+    """
+
+    unit_code = serializers.CharField(source="unit.code", read_only=True)
+    amount = serializers.DecimalField(**MONEY)
+    operation_number = serializers.SerializerMethodField()
+    vouchers = PaymentVoucherSerializer(many=True, read_only=True)
+    allocated_amount = serializers.SerializerMethodField()
+    credit_remainder = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Payment
+        fields = (
+            "id",
+            "unit",
+            "unit_code",
+            "amount",
+            "method",
+            "operation_number",
+            "paid_at",
+            "status",
+            "source",
+            "rejection_reason",
+            "vouchers",
+            "allocated_amount",
+            "credit_remainder",
+            "created_at",
+        )
+        read_only_fields = fields
+
+    def get_operation_number(self, payment):
+        """Completo para la gestión y para quien lo registró; para el resto, los 4 últimos."""
+        user = self.context["request"].user
+        if self.context["roles"] & STAFF_ROLES or payment.submitted_by_id == user.pk:
+            return payment.operation_number
+        if not payment.operation_number:
+            return ""
+        return "****" + payment.operation_number[-4:]
+
+    def _allocated(self, payment):
+        if payment.status != Payment.Status.APPROVED:
+            return ZERO
+        return sum((row.amount for row in payment.allocations.all()), ZERO)
+
+    def get_allocated_amount(self, payment):
+        return money_text(self._allocated(payment))
+
+    def get_credit_remainder(self, payment):
+        if payment.status != Payment.Status.APPROVED:
+            return money_text(ZERO)
+        return money_text(max(payment.amount - self._allocated(payment), ZERO))

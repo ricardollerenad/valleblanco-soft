@@ -1,6 +1,6 @@
 # ROADMAP: ValleBlanco-Soft (MVP Sistema de Administración de Condominios)
 
-> **Versión:** 1.8 (Fase 1 cerrada; S0 a S4 completados; siguiente: S5)
+> **Versión:** 1.9 (Fase 1 cerrada; S0 a S5-A completados; siguiente: S5-B)
 > **Dominio de producción:** `torre2.arequipa.site`
 > **Marcas:** ✅ confirmado · 🟡 supuesto propuesto (validar) · ⏳ pendiente de respuesta
 
@@ -135,7 +135,7 @@ Recibo interno con correlativo, unidad, titular, periodos cubiertos, monto, medi
 ## 8. Hoja de ruta por fases
 
 ### Fase 1: Requerimientos y Hoja de Ruta ✅ (este documento)
-Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** confirmar el umbral de morosidad (sección 12).
+Salida: reglas de negocio confirmadas, alcance en tres releases. Sin pendientes: el umbral de morosidad quedó cerrado (sección 12).
 
 ### Fase 2: Diseño de Arquitectura
 `ARCHITECTURE.md` con modelo ER, contrato de API REST, estructura Vue, autenticación, almacenamiento privado de comprobantes, diseño de plantillas CSV y design system.
@@ -149,14 +149,15 @@ Salida: reglas de negocio confirmadas, alcance en tres releases. **Pendiente:** 
 | S2 ✅ | `properties`: condominio/torre/unidades, relación persona ↔ unidad, roles por torre (`RoleAssignment`) | R1 |
 | S3 ✅ | `finances` I: cargos mensuales, libro de movimientos, saldo | R1 |
 | S4 ✅ | `finances` II: pagos con comprobante, aprobación, aplicación, saldo a favor | R1 |
-| S5 ⏭ | Recibo PDF, estado de cuenta, importación CSV | R1 |
+| S5-A ✅ | Recibo PDF (interno, inmutable, con correlativo) y estado de cuenta PDF | R1 |
+| S5-B ⏭ | Importación CSV (unidades, residentes, deudas iniciales, historial de pagos) | R1 |
 | S6 | Frontend base: design system, login, dashboards admin/residente, flujo de pago | R1 |
 | S7 | Gastos y resumen ingresos/egresos; comunicados; correo | R2 |
 | S8 | Convenios de pago | R2 |
 | S9 | Reservas del SUM | R3 |
 | S10 | Votaciones | R3 |
 
-**Estado:** S0 a S4 cerrados (992 pruebas, cobertura 99 %): `core`, `accounts` con invitación, login, límite de intentos, permisos y auditoría, `properties` con unidades, personas, ocupaciones, roles por torre y carga de la Torre 2, y `finances` con tarifas, cuotas mensuales idempotentes, cargos manuales y anulación, estado de cuenta en JSON con saldo a favor, reporte de morosidad, y pagos con comprobante privado, aprobación, rechazo y anulación por API. Siguiente: S5 (recibo PDF, estado de cuenta en PDF e importación CSV). Pendiente de S4: confirmar con PostgreSQL en el CI las pruebas con hilos, y documentar en la Fase 5 el volumen de comprobantes, `client_max_body_size` y el límite de subidas.
+**Estado:** S0 a S5-A cerrados (1111 pruebas, cobertura de `finances` 99 %): lo de S4 y, en S5-A, el `Receipt` inmutable con correlativo `R-AAAA-NNNNNN` sin huecos (emitido al aprobar el pago, en la misma transacción), el recibo en PDF (`GET /payments/{id}/receipt/pdf/`, con sello «ANULADO» si el pago se anula) y el estado de cuenta en PDF (`GET /units/{id}/statement/pdf/`), generados con WeasyPrint. Siguiente: S5-B (importación CSV). Pendiente de S4: confirmar con PostgreSQL en el CI las pruebas con hilos, y documentar en la Fase 5 el volumen de comprobantes, `client_max_body_size` y el límite de subidas. Pendiente de S5-A: ver que el job `docker` del CI construya la imagen con las librerías de Pango, valorar un límite de frecuencia para los PDF y decidir en la Fase 4 si el recibo se blinda con un disparador en PostgreSQL.
 **Definición de "Hecho":** tests en verde, cobertura ≥ 80 % del módulo, lint y type-check limpios, OpenAPI actualizado, permisos por rol probados.
 
 ### Fase 4: Pruebas, Seguridad y Accesibilidad
@@ -210,7 +211,10 @@ Nginx en el Host, Certbot, GitHub Actions por SSH, `docker compose up -d --build
 | Correos y teléfonos | No están disponibles. El sistema permite **completarlos y editarlos después**, a mano, por la administración |
 | `DEP.EN EFECTIVO` | Es un **depósito en la cuenta** del banco; cuenta como **Depósito**. "No se acepta efectivo" se refiere a efectivo entregado a la administración |
 | Gastos | Los **propietarios** ven el **detalle de cada gasto** (proveedor y monto) y su **comprobante** si existe |
+| Umbral de morosidad | **Más de 3 meses de deuda** (≥ 4): es el valor por defecto y sigue siendo configurable |
+| Gastos e inquilinos | Los **inquilinos NO** ven el detalle de los gastos: lo ven propietarios, junta y administración (se aplica en S7) |
 
 ## 13. Preguntas abiertas (⏳)
-1. Umbral de morosidad: ¿4 o más cuotas vencidas? (valor por defecto del Excel de muestra, configurable).
-2. ¿Los inquilinos también ven el detalle de gastos? (la decisión cerrada solo menciona a propietarios).
+Ninguna. Las dos que quedaban se cerraron en S5-A (ver sección 12):
+1. Umbral de morosidad: más de 3 meses de deuda (≥ 4).
+2. Los inquilinos no ven el detalle de gastos.

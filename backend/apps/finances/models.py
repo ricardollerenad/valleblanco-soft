@@ -307,3 +307,65 @@ class PaymentAllocation(BaseModel):
 
     def __str__(self):
         return f"{self.payment_id} -> {self.charge_id}: {self.amount}"
+
+
+class ReceiptImmutableError(Exception):
+    """Se intentó modificar o borrar un recibo emitido (son de solo escritura)."""
+
+
+class ReceiptQuerySet(models.QuerySet):
+    """Bloquea las modificaciones y borrados masivos de recibos."""
+
+    def update(self, **kwargs):
+        raise ReceiptImmutableError("Los recibos emitidos no se pueden modificar.")
+
+    def delete(self):
+        raise ReceiptImmutableError("Los recibos emitidos no se pueden borrar.")
+
+
+class ReceiptCounter(BaseModel):
+    """Último correlativo usado en cada año. Se bloquea la fila al emitir un recibo."""
+
+    year = models.PositiveSmallIntegerField("año", unique=True)
+    last_number = models.PositiveIntegerField("último número", default=0)
+
+    class Meta:
+        verbose_name = "contador de recibos"
+        verbose_name_plural = "contadores de recibos"
+
+    def __str__(self):
+        return f"{self.year}: {self.last_number}"
+
+
+class Receipt(BaseModel):
+    """Recibo interno de un pago aprobado (no es comprobante SUNAT).
+
+    El PDF se genera siempre desde `snapshot`, que no cambia aunque después cambien
+    el titular, la torre o cualquier otro dato. Un recibo no se edita ni se borra:
+    si el pago se anula, el recibo se conserva y el PDF se marca «ANULADO».
+    """
+
+    payment = models.OneToOneField(
+        Payment, on_delete=models.PROTECT, related_name="receipt"
+    )
+    number = models.CharField("número", max_length=20, unique=True)
+    issued_at = models.DateTimeField("emitido el")
+    snapshot = models.JSONField("datos del recibo")
+
+    objects = ReceiptQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-issued_at", "-number")
+        verbose_name = "recibo"
+        verbose_name_plural = "recibos"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ReceiptImmutableError("Los recibos emitidos no se pueden modificar.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ReceiptImmutableError("Los recibos emitidos no se pueden borrar.")
+
+    def __str__(self):
+        return self.number

@@ -1,8 +1,8 @@
 # ARCHITECTURE: ValleBlanco-Soft
 
-> **Versión:** 0.8 (borrador de Fase 2; S0 a S4 completados; decisiones de la API de pagos: permisos, comprobantes privados, advertencias y errores)
-> **Estado:** pendiente de aprobación del cliente. Los puntos marcados con ⏳ requieren respuesta (ver `ROADMAP.md`, sección 13).
-> **Base:** reglas de negocio del `ROADMAP.md` v1.2 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
+> **Versión:** 0.9 (borrador de Fase 2; S0 a S5-A completados; recibo interno inmutable con correlativo, PDF del recibo y del estado de cuenta: decisiones 40 a 50)
+> **Estado:** pendiente de aprobación del cliente. Ya no quedan puntos ⏳ abiertos: la sección 13 del `ROADMAP.md` quedó sin preguntas.
+> **Base:** reglas de negocio del `ROADMAP.md` v1.9 y análisis del Excel de muestra `12-07_2026_TORRE_2.xlsx`.
 
 ---
 
@@ -29,6 +29,7 @@
 | 17 | Base de datos por entorno | `DATABASES` usa PostgreSQL si existe `POSTGRES_DB`; si no, SQLite (solo desarrollo local). **El CI siempre usa PostgreSQL.** Lo que dependa de PostgreSQL (`ExclusionConstraint`, `select_for_update`, restricciones únicas parciales) se prueba contra PostgreSQL | SQLite no soporta esas funciones |
 | 18 | Calidad y pruebas | `ruff check` + `ruff format --check`, `makemigrations --check`, `pytest` con cobertura ≥ 80 % (`backend/pytest.ini`); se ejecutan en cada Pull Request | Misma exigencia local y en CI |
 | 19 | Modelo de usuario | `AUTH_USER_MODEL = "accounts.User"` se declara en S1, **antes** de la primera migración de `accounts` y de cualquier modelo que referencie al usuario. Se referencia siempre con `settings.AUTH_USER_MODEL` | Cambiarlo después obliga a reescribir migraciones |
+| 20 y 21 | Sin uso | Numeración saltada: estas decisiones no existen en ningún documento | No se renumera: las demás decisiones y sus referencias no cambian |
 | 22 | Perfil por registro | `/auth/me/` y el login obtienen roles y unidades de `core.profile`, donde cada app registra un proveedor (`properties` lo hace en `ready()`). `IsAdmin` significa tener el rol `ADMIN`: superusuario o `RoleAssignment`. Propietario e inquilino se derivan de las ocupaciones vigentes | `accounts` no puede importar `properties`; así la dependencia sigue yendo de izquierda a derecha |
 | 23 | Titular principal y ocupaciones | Designar un nuevo titular principal (al crear o por `PATCH`) **reemplaza** al anterior, que sigue como copropietario. No se puede quitar el titular sin designar otro, pero sí cerrar su ocupación (venta). La fecha de cierre no puede ser futura ni anterior al inicio. Las restricciones viven en la base de datos | Una unidad no queda con dos votantes y el historial de ocupaciones se conserva |
 | 24 | Códigos de unidad y carga inicial | `seed_tower` crea la torre con código = piso + número de 2 cifras (`101`…`1008`) y es repetible. `Unit.billing_start` es opcional hasta que la importación lo informe | La numeración real saldrá del Excel final; no se bloquea S2 esperándolo |
@@ -47,6 +48,17 @@
 | 37 | Duplicados y advertencias | Mismo medio, operación y monto en la torre: 409 `duplicate_payment` (el id del otro pago solo lo ve A, J o T). Mismo medio y operación con otro monto: 201 con `warnings` `same_operation_number`. Mismo archivo en otro pago de la torre: 201 con `warnings` `duplicate_voucher`. Los `payment_ids` de las advertencias solo se muestran a A, J y T | Avisar sin bloquear, y sin revelar a un residente pagos de otras unidades |
 | 38 | Errores de la API de pagos | 400 `validation_error`, `invalid_payment`, `invalid_voucher`; 404 `voucher_not_found`, `voucher_file_missing`; 409 `duplicate_payment`, `payment_not_pending`, `payment_not_approved`, `voucher_limit`; 429 `throttled`. Un 403 de permisos usa el formato por defecto de DRF | Un conflicto de estado no es un error de formato (decisión 31) |
 | 39 | Saldo a favor en la API | `GET /units/{id}/statement/` añade `credit_balance` (texto con 2 decimales) al resumen. El saldo sigue derivado (decisión 8). `apply_credit` existe como servicio, pero **no** se expone por la API todavía | Mantener la superficie mínima hasta que haya una necesidad |
+| 40 | PDF aislado | `apps/finances/pdf.py` es el único módulo que toca WeasyPrint: `render_pdf(html) -> bytes`, `weasyprint_disponible()` y `PdfNoDisponibleError`. Quien necesite un PDF llama `pdf.render_pdf(...)` (atributo del módulo, no el nombre importado). Su `URLFetcher` solo admite `data:` (no se descarga nada). Si WeasyPrint no carga, las rutas de PDF responden 503 `pdf_unavailable`. Las pruebas usan un renderizador falso (`pdf_falso`); las reales (`pdf_real`) se saltan con motivo claro si WeasyPrint no carga (Windows sin GTK) y el CI en Linux las ejecuta | Todo se prueba en cualquier equipo; el HTML no puede provocar peticiones de red |
+| 41 | Plantillas de PDF | `TEMPLATES` con `DjangoTemplates` y `APP_DIRS` (sin `DIRS` ni procesadores de contexto). Plantillas en `apps/finances/templates/finances/pdf/`: `_estilos.html` (hoja común, marca `/* estilos-pdf-valleblanco */`), `recibo.html` y `estado_cuenta.html`. `documents.py` entrega los textos ya formateados (`dd/mm/aaaa`, `S/ 0.00`, `Enero 2025`); el autoescape sigue activo | Recibo y estado de cuenta comparten estilo; el HTML no lleva lógica; el texto de un cargo no puede inyectar HTML |
+| 42 | Recibo y correlativo | `Receipt` (`payment` 1:1 con `PROTECT`, `number` único, `issued_at`, `snapshot` JSON) y `ReceiptCounter` (`year` único, `last_number`), migración `0003_receipts`. Número `R-AAAA-NNNNNN`; el año es el local (America/Lima) de la emisión. Un contador **global por año** (no por torre). La fila del año se crea con `ON CONFLICT DO NOTHING` y se bloquea con `select_for_update` hasta el final de la transacción | Sin duplicados ni huecos bajo concurrencia: si la transacción se revierte, el número se libera; la unicidad de la base es la última defensa |
+| 43 | Recibo inmutable | `Receipt.save()` solo inserta; `save()` de un recibo existente, `delete()` y `QuerySet.update()` / `delete()` lanzan `ReceiptImmutableError`. El pago no se puede borrar (`PROTECT`) | Un recibo emitido es evidencia: solo se corrige anulando el pago |
+| 44 | Emisión | `approve_payment` llama `receipts.issue_receipt` dentro de su transacción, tras aplicar a cargos y auditar `PAYMENT_APPROVED`; si la emisión falla no se aprueba nada. Los pagos `LEGACY` no emiten recibo ni gastan número. Rechazar, anular y `apply_credit` no emiten | El recibo nace en la misma transacción que la aplicación a cargos |
+| 45 | Snapshot v1 | `version`, `number`, `issued_at`, `condominium`, `tower`, `unit`, `holder` (`{"name"}` del titular principal vigente, o `null`), `amount`, `method`, `method_label`, `operation` (`****` + 4 últimos), `paid_at`, `periods` (`period`, `concept`, `concept_label`, `description`, `applied`, `covered`) y `credit_remainder`. Sin DNI, correo, teléfono ni número de operación completo | Minimización de datos; el PDF no cambia aunque después cambien el titular o la torre |
+| 46 | Pago anulado | El recibo se conserva y el PDF lleva el sello y la banda «ANULADO». El estado se lee del pago al renderizar; el snapshot no se toca. El motivo de la anulación no se imprime | Quien conserve el recibo ve que ya no vale, sin revelar datos internos |
+| 47 | Descarga del recibo | `GET /payments/{id}/receipt/pdf/`: A y T; P e I solo de su unidad; la junta sin tesorería recibe 403 (salvo que también resida en la unidad). Pago ajeno o inexistente: 404 idéntico. Pago pendiente o rechazado: 409 `payment_not_approved`. Aprobado o anulado sin recibo (LEGACY): 404 `receipt_not_found`. Cabeceras: `application/pdf`, `X-Content-Type-Options: nosniff`, `Cache-Control: private`, `attachment; filename="recibo-<número>.pdf"`. El PDF no se guarda | Mismo criterio que la descarga de comprobantes (decisión 36) |
+| 48 | Estado de cuenta PDF | `GET /units/{id}/statement/pdf/` con los mismos permisos y datos que el JSON: llama `services.unit_statement(unit, as_of)`; A, J y T ven cualquier unidad; P e I solo las suyas (ajena: 404); `as_of` mal formado: 400. Nombre `estado-de-cuenta-<código>-<as_of>.pdf` | Una sola fuente de cálculo para el JSON y el PDF |
+| 49 | Auditoría y `receipt_number` | `RECEIPT_ISSUED` (entidad `Receipt`; cambios `number`, `payment`, `unit`, `amount`; con la IP de quien aprobó); nunca el número de operación. Descargar no se audita. `PaymentSerializer` añade `receipt_number` (texto o `null`) | El front necesita saber si hay recibo para mostrar el botón |
+| 50 | Cierres de Fase 1 y 2 | Umbral de morosidad: más de 3 meses de deuda (≥ 4), valor por defecto y configurable. Los inquilinos **no** ven el detalle de gastos (solo propietarios, junta y administración): se aplica en S7. Quedan cerradas las preguntas 1 y 2 del `ROADMAP.md` (sección 13) | Sin preguntas abiertas |
 ---
 
 ## 2. Hallazgos del Excel de muestra y su impacto en el diseño
@@ -191,7 +203,8 @@ Los roles **Propietario** e **Inquilino** **no se almacenan**: se derivan de `Un
 | `Payment` | `unit`, `amount`, `method` (`TRANSFER`, `DEPOSIT`, `YAPE`, `PLIN`, `LEGACY`), `operation_number`, `paid_at`, `status` (`PENDING`, `APPROVED`, `REJECTED`, `VOID`), `submitted_by`, `reviewed_by`, `reviewed_at`, `rejection_reason`, `source` | No hay método efectivo. `LEGACY` solo para historial importado sin detalle |
 | `PaymentVoucher` | `payment`, `file`, `sha256`, `content_type`, `size` | Detecta imágenes repetidas por `sha256` |
 | `PaymentAllocation` | `payment`, `charge`, `amount` | `amount > 0`; suma por pago ≤ monto del pago; suma por cargo ≤ monto del cargo (validado con bloqueo de filas) |
-| `Receipt` | `payment` (1:1), `number` (`R-2026-000123`), `issued_at`, `snapshot` (JSON) | Correlativo por año; el PDF se genera desde el *snapshot* inmutable |
+| `Receipt` | `payment` (1:1), `number` (`R-2026-000123`), `issued_at`, `snapshot` (JSON) | Correlativo por año; el PDF se genera desde el *snapshot* inmutable (decisiones 42 a 46) |
+| `ReceiptCounter` | `year` (único), `last_number` | Una fila por año, bloqueada al emitir; sin huecos ni duplicados |
 | `ExpenseCategory` / `Expense` | `tower`, `date`, `category`, `description`, `supplier`, `amount`, `document`, `status` | Categorías iniciales: Energía común, Ascensor, Impuestos y comisiones bancarias, Materiales, Servicios de terceros, Otros. Los propietarios ven el detalle (proveedor, monto) y el comprobante si existe |
 | `OtherIncome` | `tower`, `date`, `description`, `amount` | Devoluciones y donaciones |
 | `PaymentAgreement` (convenio) | `unit`, `principal`, `installments_count`, `installment_amount`, `first_due_date`, `status`, `approved_by`, `notes` | **Interés = total pactado − principal**, y puede ser **0**. Al activarse, los cargos originales pasan a `REFINANCED` y se generan los cargos de cuota |
@@ -286,8 +299,8 @@ Servicios `compute_late_fee()` y `compute_early_discount()` existen detrás de `
 | POST | `/charges/` | Cargo manual o extraordinario | A |
 | POST | `/charges/generate/` | Generar cargos del periodo (idempotente) | A |
 | POST | `/charges/{id}/void/` | Anular cargo | A |
-| GET | `/units/{id}/statement/` | Estado de cuenta (JSON) | A, J · P, I (propio) |
-| GET | `/units/{id}/statement/pdf/` | Estado de cuenta (PDF) | A, J · P, I (propio) |
+| GET | `/units/{id}/statement/` | Estado de cuenta (JSON) | A, J, T · P, I (propio) |
+| GET | `/units/{id}/statement/pdf/` | Estado de cuenta (PDF) | A, J, T · P, I (propio) |
 | GET | `/payments/` | Pagos con filtros `unit`, `status`, `method`, `paid_from`, `paid_to` | A, T, J · P, I (propio) |
 | GET | `/payments/{id}/` | Detalle del pago | A, T, J · P, I (propio) |
 | POST | `/payments/` | Registrar pago (residente) o a nombre de otro (A, T) | A, T, P, I |
@@ -296,7 +309,7 @@ Servicios `compute_late_fee()` y `compute_early_discount()` existen detrás de `
 | POST | `/payments/{id}/approve/` | Aprobar y aplicar | A, T |
 | POST | `/payments/{id}/reject/` | Rechazar con motivo | A, T |
 | POST | `/payments/{id}/void/` | Anular pago aprobado | A |
-| GET | `/payments/{id}/receipt/pdf/` | Recibo PDF (S5) | A, T · P, I (propio) |
+| GET | `/payments/{id}/receipt/pdf/` | Recibo PDF (S5-A) | A, T · P, I (propio) |
 | GET | `/expenses/` · `/expenses/{id}/` | Gastos con detalle (proveedor, monto) | A, J, P |
 | POST/PATCH | `/expenses/` · `/expenses/{id}/` | Registrar y editar gastos | A, T |
 | GET | `/expenses/{id}/document/` | Descargar comprobante del gasto, si existe | A, J, P |
@@ -468,7 +481,7 @@ App `accounts` con pruebas primero (RED → GREEN):
 | T5 | Permisos básicos (`IsAdmin`: `is_superuser` como administrador), `POST /users/` (crear e invitar; el enlace lo ve solo la administración) y `POST /auth/invitations/accept/` | ✅ |
 | T6 | Registro en `AuditLog` de invitaciones (`INVITATION_CREATED`, `INVITATION_ACCEPTED`) y accesos (`LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `LOGIN_BLOCKED`, `LOGOUT`). Los bloqueos se registran una sola vez por ventana. Nunca se guardan contraseñas ni tokens. Los cambios de roles se auditan desde S2 | ✅ |
 
-`RoleAssignment` pasa a S2 (decisión 20). La recuperación de contraseña por correo queda para R2, porque depende de Brevo. `AuditLog` guarda el actor como texto (`actor_id`, `actor_label`), sin clave foránea.
+`RoleAssignment` pasa a S2. La recuperación de contraseña por correo queda para R2, porque depende de Brevo. `AuditLog` guarda el actor como texto (`actor_id`, `actor_label`), sin clave foránea.
 
 **Resultado:** T1 a T6 hechas (103 pruebas, cobertura 99 %). De la tabla de `/users/` de la sección 6 solo está `POST`; `GET /users/`, `PATCH /users/{id}/` y `resend-invitation` quedan para una tarea posterior. Aceptar una invitación no inicia sesión: la persona entra después por `/auth/login/`. Las acciones de auditoría se escriben en `MAYÚSCULAS_CON_GUION_BAJO`.
 
@@ -518,7 +531,7 @@ Auditoría: `FEE_RATE_CREATED`, `CHARGES_GENERATED`, `CHARGE_CREATED` y `CHARGE_
 **Resultado:** 565 pruebas en total (S3-A, 99; S3-B, 211), cobertura 99 %.
 
 **Fuera de S3 (sigue previsto):**
-- `Payment`, `PaymentVoucher`, `PaymentAllocation` y `Receipt` (S4 y S5); hasta entonces `allocated_totals` devuelve vacío y todo cargo abierto está pendiente por completo.
+- `Payment`, `PaymentVoucher` y `PaymentAllocation` (S4) y `Receipt` (S5); hasta entonces `allocated_totals` devuelve vacío y todo cargo abierto está pendiente por completo.
 - `Charge.agreement` y `Charge.reservation` se crean con convenios (S8) y reservas (S9).
 - Estado de cuenta en PDF, importación CSV, gastos y convenios.
 
@@ -563,3 +576,40 @@ Auditoría (con la IP del cliente): `PAYMENT_SUBMITTED`, `VOUCHER_ATTACHED`, `PA
 - Sin antivirus sobre los comprobantes.
 - Esquema OpenAPI (`drf-spectacular`) de los endpoints de pagos.
 - Decidir si se expone `apply_credit` (hoy, tras anular un pago pueden coexistir deuda y saldo a favor).
+
+
+---
+
+## 16. Entregables del sprint S5-A ✅ (completado)
+
+App `finances` (recibo y PDF), con ciclo RED → GREEN → REFACTOR:
+
+| Parte | Contenido |
+|-------|-----------|
+| Infraestructura | `weasyprint>=70,<71` en `requirements/base.txt`; `TEMPLATES` en `config/settings/base.py`; `ci.yml` instala Pango, HarfBuzz y fuentes antes de `pytest`; `Dockerfile` (librerías y `fonts-dejavu-core`) y `docker-compose.yml` (volumen `vouchers_data` en `/data/vouchers`) ya aplicados y verificados |
+| Recibo | `Receipt` y `ReceiptCounter` (migración `0003_receipts`), `receipts.py` (`issue_receipt`, `next_number`, `build_snapshot`) y su llamada desde `approve_payment` (decisiones 42 a 46) |
+| PDF | `pdf.py`, `documents.py`, plantillas `finances/pdf/`, `PaymentReceiptPdfView` y `UnitStatementPdfView` (decisiones 40, 41, 47 y 48) |
+
+| Método | Ruta | Roles |
+|--------|------|-------|
+| GET | `/payments/{id}/receipt/pdf/` | A, T · P, I (solo de su unidad). La junta sin tesorería: 403 |
+| GET | `/units/{id}/statement/pdf/` | A, J, T · P, I (solo lo propio) |
+
+Errores nuevos: 409 `payment_not_approved` (ya existía), 404 `receipt_not_found`, 503 `pdf_unavailable`. Auditoría: `RECEIPT_ISSUED` (decisión 49).
+
+**Resultado:** 1111 pruebas en total con PostgreSQL 16 (992 previas intactas; S5-A, 119). Cobertura de `finances`: 99 % (98,8 %). Con SQLite corren 1106 y se saltan 5 (las 5 de hilos). En un equipo donde WeasyPrint no carga se saltan además 7 (las 5 de PDF reales y 2 del renderizador). `ruff check`, `ruff format --check` y `makemigrations --check` limpios.
+
+**Cambio en una prueba existente:** `CAMPOS` de `test_payments_api.py` incluye `receipt_number`.
+
+**Fuera de S5-A (sigue previsto):**
+- Importación CSV (S5-B).
+- Envío del recibo por correo al titular principal (R2, M7).
+- Gastos, convenios y su visibilidad (los inquilinos no ven el detalle de gastos: S7).
+
+**Pendiente:**
+- Docker no verificado: el `docker compose build` con las librerías de Pango corre en el job `docker` del CI; falta ver que pase.
+- La inmutabilidad del recibo es de aplicación (modelo y consultas); un `UPDATE` directo en SQL no se bloquea. Valorar un disparador en PostgreSQL en la Fase 4.
+- Cada descarga de PDF se renderiza al momento y no tiene límite de frecuencia: con 2 vCPU valorar un límite por usuario o una caché en la Fase 4 o 5.
+- El correlativo es global por año; con las 8 torres decidir si pasa a ser por torre (prefijo o contador por torre).
+- Sin código QR ni firma de verificación en el recibo.
+- Tipografía DejaVu Sans (la que instala el `Dockerfile`); una fuente corporativa exigiría incrustarla.

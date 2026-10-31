@@ -35,6 +35,7 @@ from django.utils import timezone
 from apps.core.audit import log_event
 from apps.properties.models import Tower, Unit
 
+from . import receipts
 from .models import (
     MAX_VOUCHER_SIZE,
     Charge,
@@ -1086,6 +1087,8 @@ def approve_payment(payment, *, actor=None, ip=None):
             },
             ip=ip,
         )
+        # El recibo nace en la misma transacción que la aplicación a cargos.
+        receipts.issue_receipt(locked, allocations, remaining, actor=actor, ip=ip)
     _sync(payment, locked)
     return PaymentApproval(payment, allocations, covered, remaining)
 

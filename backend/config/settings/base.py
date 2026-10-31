@@ -56,6 +56,16 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 ]
 
+# Plantillas: hoy solo sirven para armar el HTML de los PDF (recibos y estados de
+# cuenta). No hay panel de administración ni páginas HTML públicas.
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "APP_DIRS": True,
+        "OPTIONS": {},
+    }
+]
+
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 

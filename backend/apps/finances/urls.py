@@ -20,6 +20,11 @@ urlpatterns = [
         views.UnitStatementView.as_view(),
         name="unit-statement",
     ),
+    path(
+        "units/<uuid:pk>/statement/pdf/",
+        views.UnitStatementPdfView.as_view(),
+        name="unit-statement-pdf",
+    ),
     path("payments/", views.PaymentListCreateView.as_view(), name="payment-list"),
     path(
         "payments/<uuid:pk>/",
@@ -30,6 +35,11 @@ urlpatterns = [
         "payments/<uuid:pk>/voucher/",
         views.PaymentVoucherView.as_view(),
         name="payment-voucher",
+    ),
+    path(
+        "payments/<uuid:pk>/receipt/pdf/",
+        views.PaymentReceiptPdfView.as_view(),
+        name="payment-receipt-pdf",
     ),
     path(
         "payments/<uuid:pk>/approve/",

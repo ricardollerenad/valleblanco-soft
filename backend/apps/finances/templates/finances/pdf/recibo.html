@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Recibo {{ numero }}</title>
+{% include "finances/pdf/_estilos.html" %}
+</head>
+<body>
+{% if anulado %}<div class="sello">ANULADO</div>{% endif %}
+<header class="cabecera">
+  <div class="marca">{{ condominio }} · {{ torre }}</div>
+  <h1>Recibo interno de pago</h1>
+  <div class="numero">N.° {{ numero }}</div>
+  <div class="aviso">Documento interno sin valor tributario; no es un comprobante electrónico de la SUNAT.</div>
+</header>
+
+{% if anulado %}<div class="banda-anulado">ANULADO: este recibo corresponde a un pago que fue anulado y ya no tiene validez.</div>{% endif %}
+
+<dl class="datos">
+  <div><dt>Unidad</dt><dd>{{ unidad }}</dd></div>
+  <div><dt>Titular principal</dt><dd>{% if titular %}{{ titular }}{% else %}Sin titular principal registrado{% endif %}</dd></div>
+  <div><dt>Fecha de pago</dt><dd>{{ fecha_pago }}</dd></div>
+  <div><dt>Medio de pago</dt><dd>{{ medio }}</dd></div>
+  <div><dt>N.° de operación</dt><dd>{{ operacion }}</dd></div>
+  <div><dt>Emitido el</dt><dd>{{ emitido }}</dd></div>
+</dl>
+
+<h2>Periodos cubiertos</h2>
+{% if periodos %}
+<table>
+  <thead>
+    <tr><th>Periodo</th><th>Concepto</th><th>Situación</th><th class="monto">Monto aplicado</th></tr>
+  </thead>
+  <tbody>
+  {% for fila in periodos %}
+    <tr>
+      <td>{{ fila.periodo }}</td>
+      <td>{{ fila.concepto }}{% if fila.descripcion %}<br>{{ fila.descripcion }}{% endif %}</td>
+      <td>{% if fila.cubierto %}Cubierto{% else %}Abono parcial{% endif %}</td>
+      <td class="monto">{{ fila.aplicado }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="vacio">Este pago no se aplicó a ningún cargo pendiente.</p>
+{% endif %}
+
+{% if saldo_a_favor %}
+<dl class="datos resumen"><div><dt>Saldo a favor generado</dt><dd>{{ saldo_a_favor }}</dd></div></dl>
+{% endif %}
+
+<div class="total">Monto recibido: {{ monto }}</div>
+
+<div class="pie">Los datos de este recibo se fijaron al aprobarse el pago y no cambian aunque después cambien los datos de la unidad.</div>
+</body>
+</html>

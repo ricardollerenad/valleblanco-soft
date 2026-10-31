@@ -294,3 +294,46 @@ def subir():
         )
 
     return _subir
+
+
+# --- Recibos y PDF (S5-A) ----------------------------------------------------
+
+
+@pytest.fixture
+def pdf_falso(monkeypatch):
+    """Sustituye el renderizador de PDF: devuelve una firma `%PDF` más el HTML.
+
+    Así las pruebas corren en cualquier equipo (en Windows, WeasyPrint exige GTK)
+    y pueden revisar el contenido que se habría impreso.
+    """
+    from apps.finances import pdf
+
+    def _falso(html):
+        return b"%PDF-FALSO\n" + html.encode("utf-8")
+
+    monkeypatch.setattr(pdf, "render_pdf", _falso)
+    return _falso
+
+
+@pytest.fixture
+def pdf_real():
+    """Pide el renderizador real; se salta con motivo claro si WeasyPrint no carga."""
+    from apps.finances import pdf
+
+    if not pdf.weasyprint_disponible():
+        pytest.skip(
+            "WeasyPrint no carga en este equipo (en Windows falta GTK); "
+            "el CI en Linux sí ejecuta esta prueba."
+        )
+
+
+@pytest.fixture
+def recibo_de():
+    """Devuelve el recibo de un pago (falla si no existe)."""
+
+    def _recibo(pago):
+        from apps.finances.models import Receipt
+
+        return Receipt.objects.get(payment=pago)
+
+    return _recibo

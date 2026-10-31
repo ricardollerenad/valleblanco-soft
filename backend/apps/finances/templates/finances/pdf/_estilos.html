@@ -1,0 +1,74 @@
+<style>
+/* estilos-pdf-valleblanco */
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+  @bottom-center {
+    content: "Página " counter(page) " de " counter(pages);
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 8pt;
+    color: #5b6470;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  font-family: "DejaVu Sans", sans-serif;
+  font-size: 10pt;
+  color: #1f2933;
+  line-height: 1.35;
+}
+header.cabecera {
+  border-bottom: 2px solid #1d4e89;
+  padding-bottom: 6mm;
+  margin-bottom: 6mm;
+}
+.marca { font-size: 9pt; color: #5b6470; letter-spacing: 0.04em; }
+h1 { font-size: 17pt; color: #1d4e89; margin: 1mm 0 0 0; }
+h2 { font-size: 11pt; color: #1d4e89; margin: 7mm 0 2mm 0; }
+.numero { font-size: 13pt; font-weight: bold; margin-top: 2mm; }
+.aviso { font-size: 8.5pt; color: #5b6470; margin-top: 2mm; }
+dl.datos { margin: 0; }
+dl.datos div { display: block; padding: 1.2mm 0; border-bottom: 1px solid #e4e7eb; }
+dl.datos dt { display: inline-block; width: 42mm; color: #5b6470; }
+dl.datos dd { display: inline; margin: 0; font-weight: bold; }
+table { width: 100%; border-collapse: collapse; margin-top: 2mm; }
+th {
+  text-align: left;
+  background: #eef3f8;
+  color: #1d4e89;
+  font-size: 9pt;
+  padding: 1.8mm 2mm;
+  border-bottom: 1px solid #c5d0dc;
+}
+td { padding: 1.6mm 2mm; border-bottom: 1px solid #e4e7eb; vertical-align: top; }
+th.monto, td.monto { text-align: right; white-space: nowrap; }
+tr { page-break-inside: avoid; }
+thead { display: table-header-group; }
+.total { font-size: 14pt; font-weight: bold; color: #1d4e89; margin-top: 4mm; }
+.resumen { margin-top: 2mm; }
+.vencido { color: #b42318; font-weight: bold; }
+.vacio { color: #5b6470; font-style: italic; padding: 4mm 0; }
+.estado-moroso { color: #b42318; font-weight: bold; }
+.estado-aldia { color: #067647; font-weight: bold; }
+.pie { margin-top: 10mm; font-size: 8pt; color: #5b6470; border-top: 1px solid #e4e7eb; padding-top: 2mm; }
+.sello {
+  position: fixed;
+  top: 105mm;
+  left: 16mm;
+  width: 178mm;
+  text-align: center;
+  font-size: 54pt;
+  font-weight: bold;
+  color: rgba(180, 35, 24, 0.22);
+  transform: rotate(-24deg);
+  letter-spacing: 0.1em;
+}
+.banda-anulado {
+  background: #fde8e6;
+  color: #b42318;
+  border: 1px solid #f4b7b1;
+  padding: 2mm 3mm;
+  margin-bottom: 4mm;
+  font-weight: bold;
+}
+</style>

@@ -27,6 +27,7 @@ CAMPOS = {
     "vouchers",
     "allocated_amount",
     "credit_remainder",
+    "receipt_number",
     "created_at",
 }
 

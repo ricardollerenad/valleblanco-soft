@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Estado de cuenta {{ unidad }}</title>
+{% include "finances/pdf/_estilos.html" %}
+</head>
+<body>
+<header class="cabecera">
+  <div class="marca">{{ condominio }} · {{ torre }}</div>
+  <h1>Estado de cuenta</h1>
+  <div class="numero">Unidad {{ unidad }}</div>
+  <div class="aviso">Situación al {{ al_dia_de }}. Documento informativo sin valor tributario.</div>
+</header>
+
+<h2>Resumen</h2>
+<dl class="datos">
+  <div><dt>Saldo pendiente</dt><dd>{{ saldo_pendiente }}</dd></div>
+  <div><dt>Saldo vencido</dt><dd>{{ saldo_vencido }}</dd></div>
+  <div><dt>Meses de deuda</dt><dd>{{ meses_deuda }}</dd></div>
+  <div><dt>Umbral de morosidad</dt><dd>{{ umbral }} meses</dd></div>
+  <div><dt>Condición</dt><dd>{% if moroso %}<span class="estado-moroso">Moroso</span>{% else %}<span class="estado-aldia">Al día</span>{% endif %}</dd></div>
+  <div><dt>Saldo a favor</dt><dd>{{ saldo_a_favor }}</dd></div>
+</dl>
+
+<h2>Cargos</h2>
+{% if lineas %}
+<table>
+  <thead>
+    <tr>
+      <th>Periodo</th><th>Concepto</th><th>Vence</th>
+      <th class="monto">Monto</th><th class="monto">Pagado</th><th class="monto">Pendiente</th><th>Estado</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for fila in lineas %}
+    <tr>
+      <td>{{ fila.periodo }}</td>
+      <td>{{ fila.concepto }}{% if fila.descripcion %}<br>{{ fila.descripcion }}{% endif %}</td>
+      <td>{{ fila.vence }}</td>
+      <td class="monto">{{ fila.monto }}</td>
+      <td class="monto">{{ fila.pagado }}</td>
+      <td class="monto">{{ fila.pendiente }}</td>
+      <td>{% if fila.vencido %}<span class="vencido">Vencido</span>{% elif fila.saldado %}Pagado{% else %}Por vencer{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="vacio">Sin cargos registrados.</p>
+{% endif %}
+
+<div class="pie">Emitido el {{ emitido }}. Los cargos anulados no se incluyen.</div>
+</body>
+</html>

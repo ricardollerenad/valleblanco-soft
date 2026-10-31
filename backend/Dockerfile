@@ -7,6 +7,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Librerías del sistema que necesita WeasyPrint (recibos y estados de cuenta en PDF).
+# fonts-dejavu-core: sin ninguna fuente instalada el PDF sale sin texto legible.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+
 # Dependencias primero: se reutiliza la capa mientras requirements no cambie.
 ARG REQUIREMENTS_FILE=requirements/dev.txt
 COPY requirements/ requirements/

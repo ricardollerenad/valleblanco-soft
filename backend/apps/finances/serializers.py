@@ -3,6 +3,7 @@
 import re
 from datetime import date
 
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from apps.properties.models import Tower, Unit
@@ -232,6 +233,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     vouchers = PaymentVoucherSerializer(many=True, read_only=True)
     allocated_amount = serializers.SerializerMethodField()
     credit_remainder = serializers.SerializerMethodField()
+    receipt_number = serializers.SerializerMethodField()
 
     class Meta:
         model = Payment
@@ -249,6 +251,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             "vouchers",
             "allocated_amount",
             "credit_remainder",
+            "receipt_number",
             "created_at",
         )
         read_only_fields = fields
@@ -274,3 +277,10 @@ class PaymentSerializer(serializers.ModelSerializer):
         if payment.status != Payment.Status.APPROVED:
             return money_text(ZERO)
         return money_text(max(payment.amount - self._allocated(payment), ZERO))
+
+    def get_receipt_number(self, payment):
+        """Número del recibo emitido, o `None` (pendiente, rechazado o LEGACY)."""
+        try:
+            return payment.receipt.number
+        except ObjectDoesNotExist:
+            return None

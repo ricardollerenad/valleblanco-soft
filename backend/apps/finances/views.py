@@ -1,8 +1,10 @@
 """API de finanzas. Las vistas validan, autorizan y delegan en `services`."""
 
-from django.http import FileResponse
+from django.core.exceptions import ObjectDoesNotExist
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.http import content_disposition_header
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied, Throttled
 from rest_framework.parsers import MultiPartParser
@@ -19,7 +21,7 @@ from apps.properties.models import Tower, Unit
 from apps.properties.permissions import STAFF_ROLES
 from apps.properties.views import paginated, validation_error, visible_units
 
-from . import services
+from . import documents, pdf, services
 from .models import Charge, FeeRate, Payment
 from .permissions import REVIEW_ROLES, IsStaff, IsTreasurerOrAdmin
 from .serializers import (
@@ -242,6 +244,42 @@ class UnitStatementView(APIView):
         return Response(StatementSerializer(statement).data)
 
 
+def pdf_response(content, filename):
+    """Respuesta de descarga de un PDF generado (nunca se guarda en disco)."""
+    response = HttpResponse(content, content_type="application/pdf")
+    response["Content-Disposition"] = content_disposition_header(True, filename)
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Cache-Control"] = "private"
+    return response
+
+
+def pdf_unavailable():
+    return api_error(
+        "pdf_unavailable",
+        "No se pudo generar el PDF en este momento.",
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+class UnitStatementPdfView(APIView):
+    """Estado de cuenta en PDF: mismos permisos y datos que el JSON."""
+
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, pk):
+        unit = get_object_or_404(visible_units(request.user), pk=pk)  # ajena -> 404
+        filters, error = validated_query(AsOfSerializer, request)
+        if error:
+            return error
+        statement = services.unit_statement(unit, filters.get("as_of"))
+        try:
+            content = documents.statement_pdf(statement)
+        except pdf.PdfNoDisponibleError:
+            return pdf_unavailable()
+        name = f"estado-de-cuenta-{unit.code}-{statement.as_of.isoformat()}.pdf"
+        return pdf_response(content, name)
+
+
 class DelinquencyReportView(APIView):
     permission_classes = (IsStaff,)
 
@@ -289,7 +327,7 @@ VOUCHER_DOWNLOAD_TYPES = {
 
 
 def payments_queryset():
-    return Payment.objects.select_related("unit").prefetch_related(
+    return Payment.objects.select_related("unit", "receipt").prefetch_related(
         "vouchers", "allocations"
     )
 
@@ -547,6 +585,42 @@ class PaymentVoucherView(APIView):
         response["X-Content-Type-Options"] = "nosniff"
         response["Cache-Control"] = "private"
         return response
+
+
+class PaymentReceiptPdfView(APIView):
+    """Recibo en PDF, generado desde el snapshot inmutable del recibo."""
+
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, pk):
+        user = request.user
+        roles = get_roles(user)
+        payment = get_object_or_404(visible_payments(user, roles), pk=pk)
+        # Igual que el comprobante: la junta sin tesorería ve el pago, pero no baja
+        # el recibo salvo que también resida en la unidad.
+        if not (
+            roles & REVIEW_ROLES
+            or resident_units(user).filter(pk=payment.unit_id).exists()
+        ):
+            raise PermissionDenied()
+        if payment.status in (Payment.Status.PENDING, Payment.Status.REJECTED):
+            return conflict(
+                "payment_not_approved",
+                "El recibo se emite cuando el pago es aprobado.",
+            )
+        try:
+            receipt = payment.receipt
+        except ObjectDoesNotExist:
+            return api_error(
+                "receipt_not_found",
+                "Este pago no tiene recibo.",
+                status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            content = documents.receipt_pdf(receipt, payment.status)
+        except pdf.PdfNoDisponibleError:
+            return pdf_unavailable()
+        return pdf_response(content, f"recibo-{receipt.number}.pdf")
 
 
 class PaymentApproveView(APIView):
